@@ -8,14 +8,21 @@ def load_model(model_path, device):
     """Load the trained model from checkpoint"""
     print(f"Loading model from {model_path}...")
     
-    # Load config (you might need to adjust these based on your training)
+    # First, load the checkpoint to get the actual vocabulary size
+    checkpoint = torch.load(model_path, map_location=device)
+    
+    # Extract vocab size from the embed.weight shape
+    vocab_size = checkpoint['embed.weight'].shape[0]
+    print(f"Detected vocabulary size: {vocab_size}")
+    
+    # Create config with the correct vocab size
     config = HybridConfig()
+    config.vocab_size = vocab_size
     
     # Create model instance
     model = HybridModel(config)
     
     # Load trained weights
-    checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint)
     
     model = model.to(device)
