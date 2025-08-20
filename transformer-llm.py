@@ -311,9 +311,9 @@ class MultiHeadAttention(nn.Module):
         attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.d_model)
         return self.w_o(attn_output)
 
-def simple_sequential_scan(A, B_u):
+def parallel_scan_associative(A, B_u):
     """
-    Simple sequential scan - fully gradient safe
+    True parallel associative scan using binary tree approach
     A: [batch, seq_len, num_heads, head_dim, state_size]
     B_u: [batch, seq_len, num_heads, head_dim, state_size]
     Returns: [batch, seq_len, num_heads, head_dim, state_size]
@@ -321,21 +321,122 @@ def simple_sequential_scan(A, B_u):
     batch, seq_len, num_heads, head_dim, state_size = A.shape
     device = A.device
     
-    # Initialize output list (avoid indexing into tensors)
-    states_list = []
+    # Pad sequence to power of 2 for perfect binary tree
+    next_power_of_2 = 1
+    while next_power_of_2 < seq_len:
+        next_power_of_2 *= 2
     
-    # Initialize first state
-    h = B_u[:, 0]  # [batch, num_heads, head_dim, state_size]
-    states_list.append(h.unsqueeze(1))  # Add sequence dimension
+    # Pad with identity operations
+    if next_power_of_2 > seq_len:
+        pad_size = next_power_of_2 - seq_len
+        # Identity A (ones), zero B_u for padding
+        A_pad = torch.ones(batch, pad_size, num_heads, head_dim, state_size, device=device)
+        B_u_pad = torch.zeros(batch, pad_size, num_heads, head_dim, state_size, device=device)
+        
+        A_padded = torch.cat([A, A_pad], dim=1)
+        B_u_padded = torch.cat([B_u, B_u_pad], dim=1)
+    else:
+        A_padded = A
+        B_u_padded = B_u
     
-    # Sequential scan
-    for t in range(1, seq_len):
-        # h[t] = A[t] * h[t-1] + B_u[t]
-        h = A[:, t] * h + B_u[:, t]
-        states_list.append(h.unsqueeze(1))  # Add sequence dimension
+    padded_len = A_padded.shape[1]
     
-    # Stack all states
-    return torch.cat(states_list, dim=1)
+    # Represent each element as (A_i, B_u_i) operator
+    # Composition: (A2, B2) ∘ (A1, B1) = (A2*A1, A2*B1 + B2)
+    
+    def compose_operators(op1, op2):
+        """Compose two operators (A1, B1) and (A2, B2)"""
+        A1, B1 = op1
+        A2, B2 = op2
+        return (A2 * A1, A2 * B1 + B2)
+    
+    # Initialize operators
+    operators_A = A_padded  # [batch, padded_len, num_heads, head_dim, state_size]
+    operators_B = B_u_padded  # [batch, padded_len, num_heads, head_dim, state_size]
+    
+    # Up-sweep phase (build binary tree)
+    log_n = int(torch.log2(torch.tensor(padded_len, dtype=torch.float32)).item())
+    
+    # Store intermediate results for down-sweep
+    tree_A = [operators_A]
+    tree_B = [operators_B]
+    
+    current_A = operators_A
+    current_B = operators_B
+    
+    for level in range(log_n):
+        next_len = padded_len // (2 ** (level + 1))
+        next_A = torch.zeros(batch, next_len, num_heads, head_dim, state_size, device=device)
+        next_B = torch.zeros(batch, next_len, num_heads, head_dim, state_size, device=device)
+        
+        # Combine pairs
+        for i in range(next_len):
+            # Combine elements at positions 2*i and 2*i+1
+            left_idx = 2 * i
+            right_idx = 2 * i + 1
+            
+            if right_idx < current_A.shape[1]:
+                # Compose operators: right ∘ left
+                A_left = current_A[:, left_idx]
+                B_left = current_B[:, left_idx] 
+                A_right = current_A[:, right_idx]
+                B_right = current_B[:, right_idx]
+                
+                # Composition: (A_right, B_right) ∘ (A_left, B_left)
+                next_A[:, i] = A_right * A_left
+                next_B[:, i] = A_right * B_left + B_right
+            else:
+                # Only left element exists
+                next_A[:, i] = current_A[:, left_idx]
+                next_B[:, i] = current_B[:, left_idx]
+        
+        tree_A.append(next_A)
+        tree_B.append(next_B)
+        current_A = next_A
+        current_B = next_B
+    
+    # Down-sweep phase (compute prefix products)
+    # Start from the root and propagate down
+    results_A = torch.ones(batch, 1, num_heads, head_dim, state_size, device=device)
+    results_B = torch.zeros(batch, 1, num_heads, head_dim, state_size, device=device)
+    
+    for level in range(log_n - 1, -1, -1):
+        current_len = padded_len // (2 ** level)
+        new_results_A = torch.zeros(batch, current_len, num_heads, head_dim, state_size, device=device)
+        new_results_B = torch.zeros(batch, current_len, num_heads, head_dim, state_size, device=device)
+        
+        for i in range(current_len):
+            parent_idx = i // 2
+            if parent_idx < results_A.shape[1]:
+                if i % 2 == 0:
+                    # Left child - inherit parent's prefix
+                    new_results_A[:, i] = results_A[:, parent_idx]
+                    new_results_B[:, i] = results_B[:, parent_idx]
+                else:
+                    # Right child - compose parent's prefix with left sibling
+                    left_sibling = i - 1
+                    parent_A = results_A[:, parent_idx]
+                    parent_B = results_B[:, parent_idx]
+                    sibling_A = tree_A[level][:, left_sibling]
+                    sibling_B = tree_B[level][:, left_sibling]
+                    
+                    # Compose: parent ∘ sibling
+                    new_results_A[:, i] = parent_A * sibling_A
+                    new_results_B[:, i] = parent_A * sibling_B + parent_B
+            else:
+                # Root level
+                new_results_A[:, i] = tree_A[level][:, i]
+                new_results_B[:, i] = tree_B[level][:, i]
+        
+        results_A = new_results_A
+        results_B = new_results_B
+    
+    # Apply operators to get final states
+    # h[i] = A_prefix[i] * h[0] + B_prefix[i], where h[0] = 0
+    final_states = results_B  # Since h[0] = 0, result is just B_prefix
+    
+    # Remove padding and return
+    return final_states[:, :seq_len]
 
 def selective_scan_parallel(u, dt, A, B, C, D):
     """
@@ -355,8 +456,8 @@ def selective_scan_parallel(u, dt, A, B, C, D):
     # Compute B * u for all timesteps
     Bu = dB * u.unsqueeze(-1)  # [batch, seq_len, num_heads, head_dim, state_size]
     
-    # Simple sequential scan to compute all hidden states (gradient safe)
-    hidden_states = simple_sequential_scan(dA, Bu)
+    # Parallel associative scan to compute all hidden states
+    hidden_states = parallel_scan_associative(dA, Bu)
     
     # Compute outputs in parallel across all timesteps
     # hidden_states: [batch, seq_len, num_heads, head_dim, state_size]
