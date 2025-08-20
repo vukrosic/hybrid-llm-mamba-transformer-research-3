@@ -34,17 +34,17 @@ class ModelConfig:
     n_heads: int = 8
     n_layers: int = 12  # Increased for hybrid architecture
     d_ff: int = 1536
-    batch_size: int = 24
+    batch_size: int = 16  # Reduced for memory efficiency
     max_steps: int = 5000
 
     # Hybrid architecture parameters
     hybrid_layers: bool = True
     
-    # Mamba-2 specific parameters
-    mamba_num_heads: int = 6
-    mamba_head_dim: int = 64
-    mamba_state_size: int = 64  # Reduced from 128 for smaller model
-    mamba_n_groups: int = 2     # Reduced from 8 for smaller model
+    # Mamba-2 specific parameters (further reduced for memory)
+    mamba_num_heads: int = 4    # Reduced from 6
+    mamba_head_dim: int = 48    # Reduced from 64
+    mamba_state_size: int = 32  # Reduced from 64 for memory
+    mamba_n_groups: int = 2     # Keep at 2
     mamba_conv_kernel: int = 4
     mamba_expansion: int = 2
     mamba_activation: str = "silu"
@@ -311,9 +311,9 @@ class MultiHeadAttention(nn.Module):
         attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.d_model)
         return self.w_o(attn_output)
 
-def selective_scan_naive(u, dt, A, B, C, D):
+def selective_scan_memory_efficient(u, dt, A, B, C, D):
     """
-    Naive implementation of selective scan for Mamba-2
+    Memory-efficient implementation of selective scan for Mamba-2
     u: [batch, seq_len, num_heads, head_dim]
     dt: [batch, seq_len, num_heads, head_dim] 
     A: [num_heads, head_dim, state_size]
@@ -324,28 +324,43 @@ def selective_scan_naive(u, dt, A, B, C, D):
     batch, seq_len, num_heads, head_dim = u.shape
     state_size = A.shape[-1]
     
-    # Initialize state
-    h = torch.zeros(batch, num_heads, head_dim, state_size, device=u.device, dtype=u.dtype)
-    outputs = []
+    # Pre-expand D to avoid repeated operations
+    D_expanded = D.unsqueeze(0).unsqueeze(-1).expand(batch, num_heads, head_dim)
     
-    for t in range(seq_len):
-        # Discretize A and B
-        dA = torch.exp(-dt[:, t].unsqueeze(-1) * A)  # [batch, num_heads, head_dim, state_size]
-        dB = dt[:, t].unsqueeze(-1) * B[:, t].unsqueeze(-2)  # [batch, num_heads, head_dim, state_size]
-        
-        # State update
-        h = dA * h + dB * u[:, t].unsqueeze(-1)
-        
-        # Compute output
-        y = torch.einsum('bghd,bgd->bgh', h, C[:, t])  # [batch, num_heads, head_dim]
-        
-        # Skip connection - D needs to be expanded properly
-        D_expanded = D.unsqueeze(0).unsqueeze(-1).expand(batch, num_heads, head_dim)  # [batch, num_heads, head_dim]
-        y = y + D_expanded * u[:, t]  # Skip connection
-        
-        outputs.append(y)
+    # Initialize output tensor
+    output = torch.zeros_like(u)
     
-    return torch.stack(outputs, dim=1)  # [batch, seq_len, num_heads, head_dim]
+    # Initialize state - use smaller dtype if possible
+    h = torch.zeros(batch, num_heads, head_dim, state_size, 
+                   device=u.device, dtype=u.dtype)
+    
+    # Process in chunks to save memory
+    chunk_size = min(32, seq_len)  # Process 32 tokens at a time
+    
+    for chunk_start in range(0, seq_len, chunk_size):
+        chunk_end = min(chunk_start + chunk_size, seq_len)
+        
+        for t in range(chunk_start, chunk_end):
+            # Discretize A and B - reuse tensors when possible
+            dt_t = dt[:, t].unsqueeze(-1)  # [batch, num_heads, head_dim, 1]
+            
+            # State update (in-place where possible)
+            dA = torch.exp(-dt_t * A)  # [batch, num_heads, head_dim, state_size]
+            dB = dt_t * B[:, t].unsqueeze(-2)  # [batch, num_heads, head_dim, state_size]
+            
+            h.mul_(dA).add_(dB * u[:, t].unsqueeze(-1))
+            
+            # Compute output
+            y = torch.einsum('bghd,bgd->bgh', h, C[:, t])
+            y.add_(D_expanded * u[:, t])  # Skip connection
+            
+            output[:, t] = y
+        
+        # Clear some memory periodically
+        if chunk_start > 0:
+            torch.cuda.empty_cache()
+    
+    return output
 
 class Mamba2Mixer(nn.Module):
     """Simplified Mamba-2 mixer for hybrid architecture"""
@@ -432,8 +447,8 @@ class Mamba2Mixer(nn.Module):
         # Apply softplus to dt
         dt = F.softplus(dt)
         
-        # Selective scan
-        y = selective_scan_naive(
+        # Selective scan (memory-efficient version)
+        y = selective_scan_memory_efficient(
             x_ssm,  # [B, L, num_heads, head_dim]
             dt,     # [B, L, num_heads, head_dim]
             A,      # [num_heads, head_dim, state_size]
