@@ -260,6 +260,11 @@ class GroupedQueryAttention(nn.Module):
     def forward(self, x):
         batch_size, seq_len = x.size(0), x.size(1)
 
+        # Debug print to show we're using attention
+        if not hasattr(self, '_debug_printed'):
+            print(f"🔍 ATTENTION: Using Grouped Query Attention (seq_len={seq_len})")
+            self._debug_printed = True
+
         # Project to Q, K, V
         Q = self.q_proj(x).reshape(batch_size, seq_len, self.n_heads, self.d_k)
         K = self.k_proj(x).reshape(batch_size, seq_len, self.n_kv_heads, self.d_k)
@@ -320,6 +325,14 @@ def parallel_scan_log(A, B_u):
     """
     batch, seq_len, num_heads, head_dim, state_size = A.shape
     
+    # Debug print - only print once per unique sequence length to avoid spam
+    if not hasattr(parallel_scan_log, '_printed_lens'):
+        parallel_scan_log._printed_lens = set()
+    if seq_len not in parallel_scan_log._printed_lens:
+        log_depth = int(math.ceil(math.log2(seq_len))) if seq_len > 0 else 0
+        print(f"    ⚡ LOG-DEPTH SCAN: Processing {seq_len} tokens with depth {log_depth}")
+        parallel_scan_log._printed_lens.add(seq_len)
+    
     # Use log-depth parallel scan
     # We'll work with (A, B) pairs and compose them in parallel
     
@@ -374,6 +387,13 @@ def chunked_parallel_scan(A, B_u, chunk_size=16):
     """
     batch, seq_len, num_heads, head_dim, state_size = A.shape
     device = A.device
+    
+    # Debug print - only print once per unique sequence length to avoid spam
+    if not hasattr(chunked_parallel_scan, '_printed_lens'):
+        chunked_parallel_scan._printed_lens = set()
+    if seq_len not in chunked_parallel_scan._printed_lens:
+        print(f"    📊 CHUNKED SCAN: Processing {seq_len} tokens in chunks of {chunk_size}")
+        chunked_parallel_scan._printed_lens.add(seq_len)
     
     # Reshape into chunks
     n_chunks = (seq_len + chunk_size - 1) // chunk_size
@@ -436,49 +456,33 @@ def chunked_parallel_scan(A, B_u, chunk_size=16):
     results = results.reshape(batch, padded_len, num_heads, head_dim, state_size)
     return results[:, :seq_len]
 
-def selective_scan_simple(u, dt, A, B, C, D):
+# REMOVED: selective_scan_simple - sequential fallback eliminated!
+# Now only using parallel algorithms: chunked_parallel_scan and parallel_scan_log
+
+def selective_scan_simple(*args, **kwargs):
     """
-    Simplified selective scan that's still reasonably fast
-    Uses cumulative operations where possible
+    REMOVED: This sequential implementation has been eliminated!
+    Use selective_scan_parallel() instead for truly parallel processing.
     """
-    batch, seq_len, num_heads, head_dim = u.shape
-    state_size = A.shape[-1]
-    device = u.device
-    
-    # Discretize
-    dt_expanded = dt.unsqueeze(-1)  # [batch, seq_len, num_heads, head_dim, 1]
-    dA = torch.exp(-dt_expanded * A.unsqueeze(0).unsqueeze(0))  # [batch, seq_len, num_heads, head_dim, state_size]
-    dB = dt_expanded * B.unsqueeze(-2)  # [batch, seq_len, num_heads, head_dim, state_size]
-    
-    # Compute B * u
-    Bu = dB * u.unsqueeze(-1)  # [batch, seq_len, num_heads, head_dim, state_size]
-    
-    # Use a hybrid approach: chunk the sequence for memory efficiency
-    # but process sequentially within chunks
-    chunk_size = min(64, seq_len)
-    n_chunks = (seq_len + chunk_size - 1) // chunk_size
-    
-    outputs = torch.zeros_like(u)
-    h = torch.zeros(batch, num_heads, head_dim, state_size, device=device)
-    
-    for chunk_idx in range(n_chunks):
-        start_idx = chunk_idx * chunk_size
-        end_idx = min(start_idx + chunk_size, seq_len)
-        
-        # Process chunk
-        for t in range(start_idx, end_idx):
-            h = dA[:, t] * h + Bu[:, t]
-            y = torch.sum(h * C[:, t].unsqueeze(-2), dim=-1)
-            outputs[:, t] = y + D.unsqueeze(0).unsqueeze(-1) * u[:, t]
-    
-    return outputs
+    raise RuntimeError(
+        "❌ SEQUENTIAL SCAN BLOCKED! selective_scan_simple() has been removed. "
+        "This implementation was sequential and not truly parallel. "
+        "Use selective_scan_parallel() for guaranteed parallel processing."
+    )
 
 def selective_scan_fast(u, dt, A, B, C, D, use_chunked=True):
     """
-    Fast selective scan using chunked parallel algorithm
+    Fast selective scan using ONLY parallel algorithms - no sequential fallback!
     """
     batch, seq_len, num_heads, head_dim = u.shape
     state_size = A.shape[-1]
+    
+    # Debug print to show which parallel method is being used
+    if use_chunked and seq_len > 32:
+        chunk_size = min(64, seq_len // 4)  # Adaptive chunk size
+        print(f"  🚀 Using CHUNKED parallel scan (seq_len={seq_len}, chunk_size={chunk_size})")
+    else:
+        print(f"  ⚡ Using LOG-DEPTH parallel scan (seq_len={seq_len})")
     
     # Discretize A and B matrices
     dt_expanded = dt.unsqueeze(-1)  # [batch, seq_len, num_heads, head_dim, 1]
@@ -489,12 +493,12 @@ def selective_scan_fast(u, dt, A, B, C, D, use_chunked=True):
     # Compute B * u
     Bu = dB * u.unsqueeze(-1)  # [batch, seq_len, num_heads, head_dim, state_size]
     
-    # Use chunked scan for better performance
+    # Use ONLY parallel algorithms - no sequential fallback!
     if use_chunked and seq_len > 32:
         chunk_size = min(64, seq_len // 4)  # Adaptive chunk size
         hidden_states = chunked_parallel_scan(dA, Bu, chunk_size=chunk_size)
     else:
-        # For short sequences, use simpler parallel scan
+        # For short sequences, use log-depth parallel scan
         hidden_states = parallel_scan_log(dA, Bu)
     
     # Compute outputs
@@ -560,6 +564,11 @@ class Mamba2Mixer(nn.Module):
     def forward(self, x):
         batch_size, seq_len, _ = x.shape
         
+        # Debug print to show we're using Mamba
+        if not hasattr(self, '_debug_printed'):
+            print(f"🐍 MAMBA-2: Using PARALLEL selective scan (seq_len={seq_len})")
+            self._debug_printed = True
+        
         # Input projections
         x_expanded = self.x_proj(x)
         z = self.z_proj(x)
@@ -596,8 +605,8 @@ class Mamba2Mixer(nn.Module):
         # Apply softplus to dt
         dt = F.softplus(dt)
         
-        # Use simple selective scan (still reasonably fast)
-        y = selective_scan_simple(x_ssm, dt, A, B, C, self.D)
+        # Use ONLY parallel selective scan - no fallback!
+        y = selective_scan_parallel(x_ssm, dt, A, B, C, self.D)
         
         # Reshape back
         y = y.reshape(batch_size, seq_len, self.intermediate_size)
