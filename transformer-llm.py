@@ -495,7 +495,7 @@ def selective_scan_fast(u, dt, A, B, C, D, use_chunked=True):
     # Discretize A and B matrices
     dt_expanded = dt.unsqueeze(-1)  # [batch, seq_len, num_heads, head_dim, 1]
     
-    dA = torch.exp(-dt_expanded * A)  # [batch, seq_len, num_heads, head_dim, state_size]
+    dA = torch.exp(dt_expanded * A)  # FIX: remove the extra negative so exp(dt*A) with A<0 gives decay
     dB = dt_expanded * B.unsqueeze(-2)  # [batch, seq_len, num_heads, head_dim, state_size]
     
     # Compute B * u
@@ -612,6 +612,7 @@ class Mamba2Mixer(nn.Module):
         
         # Apply softplus to dt
         dt = F.softplus(dt)
+        dt = dt.clamp(max=10.0)
         
         # Use ONLY parallel selective scan - no fallback!
         y = selective_scan_parallel(x_ssm, dt, A, B, C, self.D)
