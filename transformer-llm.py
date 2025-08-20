@@ -34,7 +34,7 @@ class ModelConfig:
     n_heads: int = 8
     n_layers: int = 12  # Increased for hybrid architecture
     d_ff: int = 1536
-    batch_size: int = 16  # Reduced for memory efficiency
+    batch_size: int = 2  # Reduced for memory efficiency
     max_steps: int = 5000
 
     # Hybrid architecture parameters
