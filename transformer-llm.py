@@ -424,7 +424,7 @@ class Mamba2Mixer(nn.Module):
         
         # Prepare A matrix
         A = -torch.exp(self.A_log.float())  # [num_heads]
-        A = A.unsqueeze(-1).expand(self.num_heads, self.head_dim, self.state_size)  # [num_heads, head_dim, state_size]
+        A = A.unsqueeze(-1).unsqueeze(-1).expand(self.num_heads, self.head_dim, self.state_size)  # [num_heads, head_dim, state_size]
         
         # Apply softplus to dt
         dt = F.softplus(dt)
