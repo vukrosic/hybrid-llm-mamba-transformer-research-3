@@ -408,7 +408,10 @@ def selective_scan_parallel(u, dt, A, B, C, D):
     hidden_states = parallel_associative_scan(dA, Bu, chunk_size=64)
     
     # Compute outputs in parallel across all timesteps
-    outputs = torch.einsum('blghds,blgs->blgh', hidden_states, C)
+    # hidden_states: [batch, seq_len, num_heads, head_dim, state_size]
+    # C: [batch, seq_len, num_heads, state_size]
+    # We want to compute: sum over state_size dimension
+    outputs = torch.sum(hidden_states * C.unsqueeze(-2), dim=-1)  # [batch, seq_len, num_heads, head_dim]
     
     # Add skip connections
     D_expanded = D.unsqueeze(0).unsqueeze(0).unsqueeze(-1)  # [1, 1, num_heads, 1]
