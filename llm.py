@@ -70,15 +70,15 @@ class SimpleSSM(nn.Module):
         x, z = xz.chunk(2, dim=-1)  # Each is [B, L, intermediate]
         
         # 2. Convolution
-        x = x.transpose(1, 2)  # [B, intermediate, L]
-        x = self.conv1d(x)[:, :, :seq_len]  # Remove padding
-        x = x.transpose(1, 2)  # [B, L, intermediate]
+        x_conv = x.transpose(1, 2)  # [B, intermediate, L]
+        x_conv = self.conv1d(x_conv)[:, :, :seq_len]  # Remove padding
+        x_conv = x_conv.transpose(1, 2)  # [B, L, intermediate]
         
         # 3. Apply activation
-        x = F.silu(x)
+        x_conv = F.silu(x_conv)
         
         # 4. SSM projection
-        x_proj = self.x_proj(x)  # [B, L, state_size*2 + 1]
+        x_proj = self.x_proj(x_conv)  # [B, L, state_size*2 + 1]
         delta, B, C = torch.split(
             x_proj, 
             [1, self.ssm_state_size, self.ssm_state_size], 
@@ -99,21 +99,29 @@ class SimpleSSM(nn.Module):
                 device=x.device, dtype=x.dtype
             )
         
-        # Simple SSM: for each timestep
+        # Simple SSM: for each timestep (this is inefficient but clear)
         outputs = []
         for t in range(seq_len):
-            # Update state
-            state = state * torch.exp(delta[:, t:t+1, :].transpose(-1, -2) * A).unsqueeze(0) + \
-                    x[:, t:t+1, :].unsqueeze(-1) * B[:, t:t+1, :].unsqueeze(1)
+            # Update state: state = state * exp(delta * A) + x * B
+            # Expand dimensions properly for broadcasting
+            delta_t = delta[:, t, :].unsqueeze(1)  # [B, 1, 1]
+            A_exp = torch.exp(delta_t * A.unsqueeze(0))  # [B, intermediate, state_size]
             
-            # Compute output
-            y_t = (state * C[:, t:t+1, :].unsqueeze(1)).sum(dim=-1)
+            x_t = x_conv[:, t, :].unsqueeze(-1)  # [B, intermediate, 1]
+            B_t = B[:, t, :].unsqueeze(1)  # [B, 1, state_size]
+            
+            state = state * A_exp + x_t * B_t
+            
+            # Compute output: y = state * C
+            C_t = C[:, t, :].unsqueeze(1)  # [B, 1, state_size]
+            y_t = (state * C_t).sum(dim=-1)  # [B, intermediate]
             outputs.append(y_t)
         
-        y = torch.stack(outputs, dim=1)
+        y = torch.stack(outputs, dim=1)  # [B, L, intermediate]
         
-        # Add skip connection
-        y = y + x * self.D
+        # Add skip connection with proper broadcasting
+        D_expanded = self.D.unsqueeze(0).unsqueeze(0)  # [1, 1, intermediate]
+        y = y + x_conv * D_expanded
         
         # 7. Output gating
         y = y * F.silu(z)
@@ -260,15 +268,32 @@ class HybridModel(nn.Module):
             return logits, new_states
         return logits
     
-    def generate(self, input_ids: torch.Tensor, max_new_tokens: int = 50):
-        """Simple generation method"""
+    def generate(self, input_ids: torch.Tensor, max_new_tokens: int = 50, temperature: float = 1.0):
+        """Simple generation method with temperature"""
         states = None
         generated = input_ids
         
         for _ in range(max_new_tokens):
             with torch.no_grad():
-                logits, states = self(generated, states, return_states=True)
-                next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+                # Get logits for the last position
+                if states is None:
+                    # First iteration - process full sequence
+                    logits, states = self(generated, states, return_states=True)
+                    next_token_logits = logits[:, -1, :]
+                else:
+                    # Subsequent iterations - only process new token
+                    last_token = generated[:, -1:]
+                    logits, states = self(last_token, states, return_states=True)
+                    next_token_logits = logits[:, -1, :]
+                
+                # Apply temperature
+                if temperature > 0:
+                    next_token_logits = next_token_logits / temperature
+                    probs = F.softmax(next_token_logits, dim=-1)
+                    next_token = torch.multinomial(probs, num_samples=1)
+                else:
+                    next_token = next_token_logits.argmax(dim=-1, keepdim=True)
+                
                 generated = torch.cat([generated, next_token], dim=1)
         
         return generated
@@ -312,6 +337,26 @@ if __name__ == "__main__":
     
     # Test generation
     prompt = torch.tensor([[1, 2, 3]]).to(device)
-    generated = model.generate(prompt, max_new_tokens=10)
+    generated = model.generate(prompt, max_new_tokens=10, temperature=0.8)
     print(f"Generated shape: {generated.shape}")
     print(f"Generated tokens: {generated}")
+    
+    # Quick training test
+    print("\nQuick training test:")
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    
+    for step in range(5):
+        # Random batch
+        inputs = torch.randint(0, config.vocab_size, (4, 64)).to(device)
+        targets = torch.randint(0, config.vocab_size, (4, 64)).to(device)
+        
+        # Forward
+        logits = model(inputs)
+        loss = F.cross_entropy(logits.view(-1, config.vocab_size), targets.view(-1))
+        
+        # Backward
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        print(f"Step {step}: Loss = {loss.item():.4f}")
