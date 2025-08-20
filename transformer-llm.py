@@ -32,11 +32,26 @@ class ModelConfig:
     # Model architecture
     d_model: int = 384
     n_heads: int = 8
-    n_layers: int = 6
+    n_layers: int = 12  # Increased for hybrid architecture
     d_ff: int = 1536
     batch_size: int = 24
     max_steps: int = 5000
 
+    # Hybrid architecture parameters
+    hybrid_layers: bool = True
+    
+    # Mamba-2 specific parameters
+    mamba_num_heads: int = 6
+    mamba_head_dim: int = 64
+    mamba_state_size: int = 64  # Reduced from 128 for smaller model
+    mamba_n_groups: int = 2     # Reduced from 8 for smaller model
+    mamba_conv_kernel: int = 4
+    mamba_expansion: int = 2
+    mamba_activation: str = "silu"
+    
+    # Attention specific (for hybrid layers)
+    num_kv_heads: int = 4  # GQA - fewer KV heads than Q heads
+    
     # Training parameters
     gradient_accumulation_steps: int = 4
     muon_lr: float = 0.01
@@ -62,6 +77,27 @@ class ModelConfig:
     def __post_init__(self):
         self.d_k = self.d_model // self.n_heads
         assert self.d_model % self.n_heads == 0, "d_model must be divisible by n_heads"
+        
+        if self.hybrid_layers:
+            # Define layer pattern for hybrid architecture
+            # Pattern: [M, F, M, F, M, F, A, F] repeated, where M=Mamba, F=FFN, A=Attention
+            pattern = []
+            for i in range(self.n_layers):
+                pos_in_cycle = i % 8
+                if pos_in_cycle in [0, 2, 4]:  # Mamba layers
+                    pattern.append("mamba")
+                elif pos_in_cycle == 6:  # Attention layer
+                    pattern.append("attention")
+                else:  # FFN layers (1, 3, 5, 7)
+                    pattern.append("ffn")
+            self.layer_pattern = pattern
+            
+            # Mamba intermediate size
+            self.mamba_intermediate_size = self.mamba_num_heads * self.mamba_head_dim
+            
+            # Ensure compatibility
+            assert self.d_model % self.mamba_num_heads == 0, "d_model must be divisible by mamba_num_heads"
+            assert self.mamba_intermediate_size <= self.d_model, "Mamba intermediate size should not exceed d_model"
 
 @torch.compile
 def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5) -> torch.Tensor:
@@ -197,6 +233,56 @@ class Rotary(nn.Module):
         y2 = x1 * (-sin) + x2 * cos
         return torch.cat((y1, y2), 3).type_as(x_BTHD)
 
+class GroupedQueryAttention(nn.Module):
+    """Grouped Query Attention for hybrid architecture"""
+    def __init__(self, d_model: int, n_heads: int, n_kv_heads: int, max_seq_len: int, dropout: float = 0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.n_kv_heads = n_kv_heads
+        self.d_k = d_model // n_heads
+        self.n_rep = n_heads // n_kv_heads  # How many times to repeat each KV head
+
+        self.q_proj = nn.Linear(d_model, n_heads * self.d_k, bias=False)
+        self.k_proj = nn.Linear(d_model, n_kv_heads * self.d_k, bias=False)
+        self.v_proj = nn.Linear(d_model, n_kv_heads * self.d_k, bias=False)
+        self.w_o = nn.Linear(n_heads * self.d_k, d_model, bias=False)
+        self.rotary = Rotary(self.d_k, max_seq_len)
+        self.dropout = dropout
+
+    def repeat_kv(self, x):
+        """Repeat KV heads to match number of query heads"""
+        batch, seq_len, n_kv_heads, head_dim = x.shape
+        if self.n_rep == 1:
+            return x
+        return x.repeat_interleave(self.n_rep, dim=2)
+
+    def forward(self, x):
+        batch_size, seq_len = x.size(0), x.size(1)
+
+        # Project to Q, K, V
+        Q = self.q_proj(x).reshape(batch_size, seq_len, self.n_heads, self.d_k)
+        K = self.k_proj(x).reshape(batch_size, seq_len, self.n_kv_heads, self.d_k)
+        V = self.v_proj(x).reshape(batch_size, seq_len, self.n_kv_heads, self.d_k)
+
+        # Apply rotary embeddings
+        Q = Q.transpose(1, 2)  # [batch, n_heads, seq_len, d_k]
+        K = K.transpose(1, 2)  # [batch, n_kv_heads, seq_len, d_k]
+        V = V.transpose(1, 2)  # [batch, n_kv_heads, seq_len, d_k]
+        
+        Q = self.rotary(Q)
+        K = self.rotary(K)
+
+        # Repeat K and V to match Q heads
+        K = self.repeat_kv(K.transpose(1, 2)).transpose(1, 2)  # [batch, n_heads, seq_len, d_k]
+        V = self.repeat_kv(V.transpose(1, 2)).transpose(1, 2)  # [batch, n_heads, seq_len, d_k]
+
+        attn_output = F.scaled_dot_product_attention(
+            Q, K, V, is_causal=True, dropout_p=self.dropout if self.training else 0.0
+        )
+        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.d_model)
+        return self.w_o(attn_output)
+
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model: int, n_heads: int, max_seq_len: int, dropout: float = 0.1):
         super().__init__()
@@ -225,6 +311,143 @@ class MultiHeadAttention(nn.Module):
         attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.d_model)
         return self.w_o(attn_output)
 
+def selective_scan_naive(u, dt, A, B, C, D):
+    """
+    Naive implementation of selective scan for Mamba-2
+    u: [batch, seq_len, groups, head_dim]
+    dt: [batch, seq_len, groups, head_dim] 
+    A: [groups, head_dim, state_size]
+    B: [batch, seq_len, groups, state_size]
+    C: [batch, seq_len, groups, state_size]
+    D: [groups, head_dim]
+    """
+    batch, seq_len, groups, head_dim = u.shape
+    state_size = A.shape[-1]
+    
+    # Initialize state
+    h = torch.zeros(batch, groups, head_dim, state_size, device=u.device, dtype=u.dtype)
+    outputs = []
+    
+    for t in range(seq_len):
+        # Discretize A and B
+        dA = torch.exp(-dt[:, t].unsqueeze(-1) * A)  # [batch, groups, head_dim, state_size]
+        dB = dt[:, t].unsqueeze(-1) * B[:, t].unsqueeze(-2)  # [batch, groups, head_dim, state_size]
+        
+        # State update
+        h = dA * h + dB * u[:, t].unsqueeze(-1)
+        
+        # Compute output
+        y = torch.einsum('bghd,bgd->bgh', h, C[:, t])  # [batch, groups, head_dim]
+        y = y + D.unsqueeze(0) * u[:, t]  # Skip connection
+        
+        outputs.append(y)
+    
+    return torch.stack(outputs, dim=1)  # [batch, seq_len, groups, head_dim]
+
+class Mamba2Mixer(nn.Module):
+    """Simplified Mamba-2 mixer for hybrid architecture"""
+    
+    def __init__(self, config: ModelConfig):
+        super().__init__()
+        self.d_model = config.d_model
+        self.num_heads = config.mamba_num_heads
+        self.head_dim = config.mamba_head_dim
+        self.state_size = config.mamba_state_size
+        self.n_groups = config.mamba_n_groups
+        self.conv_kernel = config.mamba_conv_kernel
+        self.expansion = config.mamba_expansion
+        
+        self.intermediate_size = self.num_heads * self.head_dim
+        
+        # Input projections
+        self.x_proj = nn.Linear(self.d_model, self.intermediate_size * self.expansion, bias=False)
+        self.z_proj = nn.Linear(self.d_model, self.intermediate_size, bias=False)
+        
+        # SSM parameter projections
+        self.dt_proj = nn.Linear(self.d_model, self.num_heads, bias=False)
+        self.B_proj = nn.Linear(self.d_model, self.n_groups * self.state_size, bias=False)
+        self.C_proj = nn.Linear(self.d_model, self.n_groups * self.state_size, bias=False)
+        
+        # Causal convolution
+        conv_dim = self.intermediate_size * self.expansion
+        self.conv1d = nn.Conv1d(
+            in_channels=conv_dim,
+            out_channels=conv_dim,
+            kernel_size=self.conv_kernel,
+            groups=conv_dim,
+            padding=self.conv_kernel - 1,
+            bias=False
+        )
+        
+        # SSM parameters
+        self.A_log = nn.Parameter(torch.log(torch.arange(1, self.num_heads + 1, dtype=torch.float32)))
+        self.D = nn.Parameter(torch.ones(self.num_heads))
+        
+        # Output projection
+        self.out_proj = nn.Linear(self.intermediate_size, self.d_model, bias=False)
+        
+        # Gated normalization (simplified)
+        self.norm = nn.RMSNorm(self.intermediate_size)
+    
+    def forward(self, x):
+        batch_size, seq_len, _ = x.shape
+        
+        # Input projections
+        x_expanded = self.x_proj(x)  # [B, L, intermediate * expansion]
+        z = self.z_proj(x)           # [B, L, intermediate] - gate
+        
+        # SSM parameters
+        dt = self.dt_proj(x)         # [B, L, num_heads]
+        B = self.B_proj(x)           # [B, L, n_groups * state_size]
+        C = self.C_proj(x)           # [B, L, n_groups * state_size]
+        
+        # Apply activation and convolution
+        x_expanded = F.silu(x_expanded)
+        x_conv = self.conv1d(x_expanded.transpose(1, 2)).transpose(1, 2)
+        x_conv = x_conv[:, :seq_len]  # Remove padding
+        
+        # Take only the first part for SSM (rest is for gating)
+        x_ssm = x_conv[:, :, :self.intermediate_size]
+        
+        # Reshape for group processing
+        x_ssm = x_ssm.reshape(batch_size, seq_len, self.num_heads, self.head_dim)
+        dt = dt.reshape(batch_size, seq_len, self.num_heads, 1).expand(-1, -1, -1, self.head_dim)
+        
+        # Expand B and C to match number of heads
+        B = B.reshape(batch_size, seq_len, self.n_groups, self.state_size)
+        C = C.reshape(batch_size, seq_len, self.n_groups, self.state_size)
+        
+        # Repeat B and C for all heads in each group
+        heads_per_group = self.num_heads // self.n_groups
+        B = B.repeat_interleave(heads_per_group, dim=2)  # [B, L, num_heads, state_size]
+        C = C.repeat_interleave(heads_per_group, dim=2)  # [B, L, num_heads, state_size]
+        
+        # Prepare A matrix
+        A = -torch.exp(self.A_log.float())  # [num_heads]
+        A = A.unsqueeze(-1).expand(self.num_heads, self.head_dim, self.state_size)  # [num_heads, head_dim, state_size]
+        
+        # Apply softplus to dt
+        dt = F.softplus(dt)
+        
+        # Selective scan
+        y = selective_scan_naive(
+            x_ssm,  # [B, L, num_heads, head_dim]
+            dt,     # [B, L, num_heads, head_dim]
+            A,      # [num_heads, head_dim, state_size]
+            B,      # [B, L, num_heads, state_size]
+            C,      # [B, L, num_heads, state_size]
+            self.D  # [num_heads]
+        )
+        
+        # Reshape back
+        y = y.reshape(batch_size, seq_len, self.intermediate_size)
+        
+        # Apply gating and normalization
+        y = self.norm(y * F.silu(z))
+        
+        # Output projection
+        return self.out_proj(y)
+
 class FeedForward(nn.Module):
     def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
         super().__init__()
@@ -233,7 +456,45 @@ class FeedForward(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        return self.linear2(self.dropout(F.silu(self.linear1(x))))
+        # Using squared ReLU activation like in Nemotron
+        h = self.linear1(x)
+        h = torch.square(F.relu(h))
+        return self.linear2(self.dropout(h))
+
+class HybridBlock(nn.Module):
+    """Hybrid block that can be Mamba, Attention, or FFN"""
+    def __init__(self, config: ModelConfig, layer_type: str, layer_idx: int):
+        super().__init__()
+        self.layer_type = layer_type
+        self.layer_idx = layer_idx
+        self.d_model = config.d_model
+        
+        # Pre-norm
+        self.norm = nn.RMSNorm(config.d_model)
+        self.dropout = nn.Dropout(config.dropout)
+        
+        if layer_type == "mamba":
+            self.mixer = Mamba2Mixer(config)
+        elif layer_type == "attention":
+            self.mixer = GroupedQueryAttention(
+                config.d_model, 
+                config.n_heads, 
+                config.num_kv_heads,
+                config.max_seq_len, 
+                config.dropout
+            )
+        elif layer_type == "ffn":
+            self.mixer = FeedForward(config.d_model, config.d_ff, config.dropout)
+        else:
+            raise ValueError(f"Unknown layer type: {layer_type}")
+    
+    def forward(self, x):
+        # Pre-norm residual connection
+        residual = x
+        x = self.norm(x)
+        x = self.mixer(x)
+        x = self.dropout(x)
+        return residual + x
 
 class TransformerBlock(nn.Module):
     def __init__(self, d_model: int, n_heads: int, d_ff: int, max_seq_len: int, dropout: float = 0.1):
@@ -251,6 +512,62 @@ class TransformerBlock(nn.Module):
         x = x + self.dropout(ff_out)
         return x
 
+class HybridLLM(nn.Module):
+    """Hybrid Mamba-2/Transformer LLM"""
+    def __init__(self, config: ModelConfig):
+        super().__init__()
+        self.config = config
+
+        self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
+        
+        # Create hybrid blocks based on layer pattern
+        if config.hybrid_layers:
+            self.layers = nn.ModuleList([
+                HybridBlock(config, config.layer_pattern[i], i)
+                for i in range(config.n_layers)
+            ])
+            print(f"🔧 Created hybrid architecture: {config.layer_pattern}")
+        else:
+            # Fallback to pure transformer
+            self.layers = nn.ModuleList([
+                TransformerBlock(config.d_model, config.n_heads, config.d_ff, config.max_seq_len, config.dropout)
+                for _ in range(config.n_layers)
+            ])
+            print(f"🔧 Created pure transformer architecture")
+
+        self.norm = nn.RMSNorm(config.d_model)
+
+        # Separate embedding and output layers (not tied like in Nemotron)
+        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, Mamba2Mixer):
+            # Special initialization for Mamba components
+            if hasattr(module, 'A_log'):
+                module.A_log._no_weight_decay = True
+            if hasattr(module, 'D'):
+                module.D._no_weight_decay = True
+
+    def forward(self, x):
+        # No positional embeddings - Mamba handles position through convolution
+        x = self.token_embedding(x) * math.sqrt(self.config.d_model)
+
+        for layer in self.layers:
+            x = layer(x)
+
+        x = self.norm(x)
+        logits = self.lm_head(x)
+        return logits
+
+# Keep original for backward compatibility
 class MinimalLLM(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
@@ -349,11 +666,12 @@ def setup_muon_optimizer(model: nn.Module, config: ModelConfig):
 
 def train_model(config: ModelConfig, train_loader: DataLoader, val_loader: DataLoader):
     """Train the model with Muon optimizer"""
-    print(f"\n🚀 Training Small model with Muon optimizer")
+    model_type = "Hybrid Mamba-2/Transformer" if config.hybrid_layers else "Pure Transformer"
+    print(f"\n🚀 Training {model_type} model with Muon optimizer")
 
     # Initialize model
     set_seed(42)
-    model = MinimalLLM(config)
+    model = HybridLLM(config) if config.hybrid_layers else MinimalLLM(config)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
 
@@ -479,10 +797,16 @@ if __name__ == "__main__":
     # Set seed
     set_seed(42)
 
-    # Create config for Small model
+    # Create config for Hybrid model
     config = ModelConfig()
     print(f"\n📋 Model Configuration:")
-    print(f"   Architecture: {config.d_model}d, {config.n_layers}L, {config.n_heads}H, {config.d_ff}ff")
+    if config.hybrid_layers:
+        print(f"   Architecture: Hybrid Mamba-2/Transformer")
+        print(f"   Base: {config.d_model}d, {config.n_layers}L, {config.n_heads}H, {config.d_ff}ff")
+        print(f"   Mamba: {config.mamba_num_heads}H, {config.mamba_head_dim}d, {config.mamba_state_size}s, {config.mamba_n_groups}g")
+        print(f"   Pattern: {config.layer_pattern}")
+    else:
+        print(f"   Architecture: {config.d_model}d, {config.n_layers}L, {config.n_heads}H, {config.d_ff}ff")
     print(f"   Training: {config.max_steps} steps, batch size {config.batch_size}")
     print(f"   Data: {config.max_tokens:,} tokens, seq_len {config.max_seq_len}")
 
