@@ -311,93 +311,31 @@ class MultiHeadAttention(nn.Module):
         attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.d_model)
         return self.w_o(attn_output)
 
-def parallel_associative_scan(A, B_u, chunk_size=64):
+def simple_sequential_scan(A, B_u):
     """
-    Parallel associative scan for Mamba-2 training
-    
-    A: [batch, seq_len, num_heads, head_dim, state_size] - state transition matrices
-    B_u: [batch, seq_len, num_heads, head_dim, state_size] - input projections
-    
-    Returns: hidden states [batch, seq_len, num_heads, head_dim, state_size]
+    Simple sequential scan - fully gradient safe
+    A: [batch, seq_len, num_heads, head_dim, state_size]
+    B_u: [batch, seq_len, num_heads, head_dim, state_size]
+    Returns: [batch, seq_len, num_heads, head_dim, state_size]
     """
     batch, seq_len, num_heads, head_dim, state_size = A.shape
     device = A.device
     
-    # Chunk the sequence for memory efficiency and parallelization
-    num_chunks = (seq_len + chunk_size - 1) // chunk_size
+    # Initialize output list (avoid indexing into tensors)
+    states_list = []
     
-    def scan_chunk(A_chunk, Bu_chunk):
-        """Parallel scan within a chunk using associative scan"""
-        chunk_len = A_chunk.shape[1]
-        
-        # Initialize states
-        states = torch.zeros(batch, chunk_len, num_heads, head_dim, state_size, device=device)
-        
-        # Initialize first state
-        if chunk_len > 0:
-            states[:, 0] = Bu_chunk[:, 0]  # h[0] = B[0] * u[0] (no previous state)
-        
-        # Sequential scan within chunk (can be parallelized further with more complex algorithms)
-        for i in range(1, chunk_len):
-            # h[i] = A[i] * h[i-1] + Bu[i]
-            prev_state = states[:, i - 1]  # [batch, num_heads, head_dim, state_size]
-            curr_A = A_chunk[:, i]         # [batch, num_heads, head_dim, state_size]  
-            curr_Bu = Bu_chunk[:, i]       # [batch, num_heads, head_dim, state_size]
-            
-            # Element-wise multiplication for state transition
-            states[:, i] = curr_A * prev_state + curr_Bu
-        
-        return states
+    # Initialize first state
+    h = B_u[:, 0]  # [batch, num_heads, head_dim, state_size]
+    states_list.append(h.unsqueeze(1))  # Add sequence dimension
     
-    # Process chunks
-    all_chunk_states = []
-    chunk_final_states = []
+    # Sequential scan
+    for t in range(1, seq_len):
+        # h[t] = A[t] * h[t-1] + B_u[t]
+        h = A[:, t] * h + B_u[:, t]
+        states_list.append(h.unsqueeze(1))  # Add sequence dimension
     
-    for chunk_idx in range(num_chunks):
-        start_idx = chunk_idx * chunk_size
-        end_idx = min(start_idx + chunk_size, seq_len)
-        
-        A_chunk = A[:, start_idx:end_idx]
-        Bu_chunk = B_u[:, start_idx:end_idx]
-        
-        chunk_states = scan_chunk(A_chunk, Bu_chunk)
-        all_chunk_states.append(chunk_states)
-        
-        # Store final state of chunk for inter-chunk propagation
-        if chunk_states.shape[1] > 0:
-            chunk_final_states.append(chunk_states[:, -1])
-    
-    # Inter-chunk state propagation (avoid in-place operations)
-    if len(chunk_final_states) > 1:
-        # Propagate states between chunks
-        corrected_chunks = []
-        corrected_chunks.append(all_chunk_states[0])  # First chunk is unchanged
-        
-        for chunk_idx in range(1, len(all_chunk_states)):
-            # Add contribution from previous chunks
-            prev_final = chunk_final_states[chunk_idx - 1]
-            current_chunk = all_chunk_states[chunk_idx]
-            
-            # Create new tensor instead of modifying in-place
-            corrected_chunk = torch.zeros_like(current_chunk)
-            
-            # Apply previous state to all positions in current chunk
-            for t in range(current_chunk.shape[1]):
-                global_t = chunk_idx * chunk_size + t
-                if global_t < seq_len:
-                    A_t = A[:, global_t]  # [batch, num_heads, head_dim, state_size]
-                    # Element-wise multiplication and addition (no in-place)
-                    corrected_chunk[:, t] = A_t * prev_final + current_chunk[:, t]
-                else:
-                    corrected_chunk[:, t] = current_chunk[:, t]
-            
-            corrected_chunks.append(corrected_chunk)
-        
-        # Use corrected chunks
-        all_chunk_states = corrected_chunks
-    
-    # Concatenate all chunks
-    return torch.cat(all_chunk_states, dim=1)
+    # Stack all states
+    return torch.cat(states_list, dim=1)
 
 def selective_scan_parallel(u, dt, A, B, C, D):
     """
@@ -417,8 +355,8 @@ def selective_scan_parallel(u, dt, A, B, C, D):
     # Compute B * u for all timesteps
     Bu = dB * u.unsqueeze(-1)  # [batch, seq_len, num_heads, head_dim, state_size]
     
-    # Parallel associative scan to compute all hidden states
-    hidden_states = parallel_associative_scan(dA, Bu, chunk_size=64)
+    # Simple sequential scan to compute all hidden states (gradient safe)
+    hidden_states = simple_sequential_scan(dA, Bu)
     
     # Compute outputs in parallel across all timesteps
     # hidden_states: [batch, seq_len, num_heads, head_dim, state_size]
