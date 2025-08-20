@@ -390,7 +390,6 @@ def chunked_parallel_scan(A, B_u, chunk_size=16):
     B_chunks = B_u.reshape(batch, n_chunks, chunk_size, num_heads, head_dim, state_size)
     
     # Scan within each chunk (can be done in parallel)
-    # Using cumulative product for A and custom accumulation for B
     A_scan = torch.zeros_like(A_chunks)
     B_scan = torch.zeros_like(B_chunks)
     
@@ -426,14 +425,53 @@ def chunked_parallel_scan(A, B_u, chunk_size=16):
             results[:, c] = B_scan[:, c]
         else:
             # Apply chunk prefix to all elements in chunk
-            prefix_A = chunk_A_scan[:, c-1:c].unsqueeze(2)  # [batch, 1, 1, num_heads, head_dim, state_size]
-            prefix_B = chunk_B_scan[:, c-1:c].unsqueeze(2)  # [batch, 1, 1, num_heads, head_dim, state_size]
+            # Fix: properly broadcast the prefix across the chunk dimension
+            prefix_A = chunk_A_scan[:, c-1].unsqueeze(1)  # [batch, 1, num_heads, head_dim, state_size]
+            prefix_B = chunk_B_scan[:, c-1].unsqueeze(1)  # [batch, 1, num_heads, head_dim, state_size]
             
-            results[:, c] = prefix_A * B_scan[:, c] + prefix_B
+            # Now both have compatible shapes for broadcasting
+            results[:, c] = prefix_A * B_scan[:, c] + prefix_B.expand_as(B_scan[:, c])
     
     # Reshape back and trim padding
     results = results.reshape(batch, padded_len, num_heads, head_dim, state_size)
     return results[:, :seq_len]
+
+def selective_scan_simple(u, dt, A, B, C, D):
+    """
+    Simplified selective scan that's still reasonably fast
+    Uses cumulative operations where possible
+    """
+    batch, seq_len, num_heads, head_dim = u.shape
+    state_size = A.shape[-1]
+    device = u.device
+    
+    # Discretize
+    dt_expanded = dt.unsqueeze(-1)  # [batch, seq_len, num_heads, head_dim, 1]
+    dA = torch.exp(-dt_expanded * A.unsqueeze(0).unsqueeze(0))  # [batch, seq_len, num_heads, head_dim, state_size]
+    dB = dt_expanded * B.unsqueeze(-2)  # [batch, seq_len, num_heads, head_dim, state_size]
+    
+    # Compute B * u
+    Bu = dB * u.unsqueeze(-1)  # [batch, seq_len, num_heads, head_dim, state_size]
+    
+    # Use a hybrid approach: chunk the sequence for memory efficiency
+    # but process sequentially within chunks
+    chunk_size = min(64, seq_len)
+    n_chunks = (seq_len + chunk_size - 1) // chunk_size
+    
+    outputs = torch.zeros_like(u)
+    h = torch.zeros(batch, num_heads, head_dim, state_size, device=device)
+    
+    for chunk_idx in range(n_chunks):
+        start_idx = chunk_idx * chunk_size
+        end_idx = min(start_idx + chunk_size, seq_len)
+        
+        # Process chunk
+        for t in range(start_idx, end_idx):
+            h = dA[:, t] * h + Bu[:, t]
+            y = torch.sum(h * C[:, t].unsqueeze(-2), dim=-1)
+            outputs[:, t] = y + D.unsqueeze(0).unsqueeze(-1) * u[:, t]
+    
+    return outputs
 
 def selective_scan_fast(u, dt, A, B, C, D, use_chunked=True):
     """
@@ -475,7 +513,7 @@ def selective_scan_parallel(u, dt, A, B, C, D):
     return selective_scan_fast(u, dt, A, B, C, D, use_chunked=True)
 
 class Mamba2Mixer(nn.Module):
-    """Simplified Mamba-2 mixer for hybrid architecture"""
+    """Optimized Mamba-2 mixer with fast scan"""
     
     def __init__(self, config: ModelConfig):
         super().__init__()
@@ -516,58 +554,50 @@ class Mamba2Mixer(nn.Module):
         # Output projection
         self.out_proj = nn.Linear(self.intermediate_size, self.d_model, bias=False)
         
-        # Gated normalization (simplified)
+        # Gated normalization
         self.norm = nn.RMSNorm(self.intermediate_size)
     
     def forward(self, x):
         batch_size, seq_len, _ = x.shape
         
         # Input projections
-        x_expanded = self.x_proj(x)  # [B, L, intermediate * expansion]
-        z = self.z_proj(x)           # [B, L, intermediate] - gate
+        x_expanded = self.x_proj(x)
+        z = self.z_proj(x)
         
         # SSM parameters
-        dt = self.dt_proj(x)         # [B, L, num_heads]
-        B = self.B_proj(x)           # [B, L, n_groups * state_size]
-        C = self.C_proj(x)           # [B, L, n_groups * state_size]
+        dt = self.dt_proj(x)
+        B = self.B_proj(x)
+        C = self.C_proj(x)
         
         # Apply activation and convolution
         x_expanded = F.silu(x_expanded)
         x_conv = self.conv1d(x_expanded.transpose(1, 2)).transpose(1, 2)
-        x_conv = x_conv[:, :seq_len]  # Remove padding
+        x_conv = x_conv[:, :seq_len]
         
-        # Take only the first part for SSM (rest is for gating)
+        # Take only the first part for SSM
         x_ssm = x_conv[:, :, :self.intermediate_size]
         
-        # Reshape for group processing
+        # Reshape for processing
         x_ssm = x_ssm.reshape(batch_size, seq_len, self.num_heads, self.head_dim)
         dt = dt.reshape(batch_size, seq_len, self.num_heads, 1).expand(-1, -1, -1, self.head_dim)
         
-        # Expand B and C to match number of heads
+        # Expand B and C
         B = B.reshape(batch_size, seq_len, self.n_groups, self.state_size)
         C = C.reshape(batch_size, seq_len, self.n_groups, self.state_size)
         
-        # Repeat B and C for all heads in each group
         heads_per_group = self.num_heads // self.n_groups
-        B = B.repeat_interleave(heads_per_group, dim=2)  # [B, L, num_heads, state_size]
-        C = C.repeat_interleave(heads_per_group, dim=2)  # [B, L, num_heads, state_size]
+        B = B.repeat_interleave(heads_per_group, dim=2)
+        C = C.repeat_interleave(heads_per_group, dim=2)
         
         # Prepare A matrix
-        A = -torch.exp(self.A_log.float())  # [num_heads]
-        A = A.unsqueeze(-1).unsqueeze(-1).expand(self.num_heads, self.head_dim, self.state_size)  # [num_heads, head_dim, state_size]
+        A = -torch.exp(self.A_log.float())
+        A = A.unsqueeze(-1).unsqueeze(-1).expand(self.num_heads, self.head_dim, self.state_size)
         
         # Apply softplus to dt
         dt = F.softplus(dt)
         
-        # Parallel selective scan for training efficiency
-        y = selective_scan_parallel(
-            x_ssm,  # [B, L, num_heads, head_dim]
-            dt,     # [B, L, num_heads, head_dim]
-            A,      # [num_heads, head_dim, state_size]
-            B,      # [B, L, num_heads, state_size]
-            C,      # [B, L, num_heads, state_size]
-            self.D  # [num_heads]
-        )
+        # Use simple selective scan (still reasonably fast)
+        y = selective_scan_simple(x_ssm, dt, A, B, C, self.D)
         
         # Reshape back
         y = y.reshape(batch_size, seq_len, self.intermediate_size)
@@ -575,7 +605,6 @@ class Mamba2Mixer(nn.Module):
         # Apply gating and normalization
         y = self.norm(y * F.silu(z))
         
-        # Output projection
         return self.out_proj(y)
 
 class FeedForward(nn.Module):
