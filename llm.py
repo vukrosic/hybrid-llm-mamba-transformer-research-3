@@ -463,7 +463,15 @@ class Trainer:
     
     def load_checkpoint(self, path):
         """Load model checkpoint"""
-        checkpoint = torch.load(path, map_location=self.device)
+        # Fix for PyTorch 2.6+ compatibility
+        try:
+            checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        except Exception as e:
+            # Fallback: try with safe globals
+            import torch.serialization
+            torch.serialization.add_safe_globals(['__main__.HybridConfig'])
+            checkpoint = torch.load(path, map_location=self.device, weights_only=True)
+        
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
