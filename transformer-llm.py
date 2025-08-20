@@ -330,36 +330,22 @@ def parallel_associative_scan(A, B_u, chunk_size=64):
         """Parallel scan within a chunk using associative scan"""
         chunk_len = A_chunk.shape[1]
         
-        # Initialize: each position is an operator (A[t], B[t]*u[t])
-        # We'll represent state as h[t] = A[t] * h[t-1] + B[t]*u[t]
-        
-        # For parallel scan, we need to compute prefix products
-        # Use log-depth parallel scan algorithm
-        
-        # Start with identity for initial state
+        # Initialize states
         states = torch.zeros(batch, chunk_len, num_heads, head_dim, state_size, device=device)
-        
-        # Compute powers of A for parallel scan
-        # This is a simplified version - real implementation uses more sophisticated algorithms
-        log_steps = int(torch.ceil(torch.log2(torch.tensor(chunk_len, dtype=torch.float32))))
         
         # Initialize first state
         if chunk_len > 0:
             states[:, 0] = Bu_chunk[:, 0]  # h[0] = B[0] * u[0] (no previous state)
         
-        # Parallel scan using powers of 2
-        for step in range(log_steps):
-            stride = 2 ** step
+        # Sequential scan within chunk (can be parallelized further with more complex algorithms)
+        for i in range(1, chunk_len):
+            # h[i] = A[i] * h[i-1] + Bu[i]
+            prev_state = states[:, i - 1]  # [batch, num_heads, head_dim, state_size]
+            curr_A = A_chunk[:, i]         # [batch, num_heads, head_dim, state_size]  
+            curr_Bu = Bu_chunk[:, i]       # [batch, num_heads, head_dim, state_size]
             
-            for i in range(stride, chunk_len):
-                if i - stride >= 0:
-                    # h[i] = A[i] * h[i-stride] + current_contribution
-                    prev_state = states[:, i - stride]
-                    curr_A = A_chunk[:, i]
-                    curr_Bu = Bu_chunk[:, i]
-                    
-                    # Apply the recurrence relation
-                    states[:, i] = torch.einsum('bghds,bghds->bghds', curr_A, prev_state) + curr_Bu
+            # Element-wise multiplication for state transition
+            states[:, i] = curr_A * prev_state + curr_Bu
         
         return states
     
@@ -391,8 +377,11 @@ def parallel_associative_scan(A, B_u, chunk_size=64):
             
             # Apply previous state to all positions in current chunk
             for t in range(current_chunk.shape[1]):
-                A_t = A[:, chunk_idx * chunk_size + t]
-                current_chunk[:, t] = torch.einsum('bghds,bghds->bghds', A_t, prev_final) + current_chunk[:, t]
+                global_t = chunk_idx * chunk_size + t
+                if global_t < seq_len:
+                    A_t = A[:, global_t]  # [batch, num_heads, head_dim, state_size]
+                    # Element-wise multiplication and addition
+                    current_chunk[:, t] = A_t * prev_final + current_chunk[:, t]
     
     # Concatenate all chunks
     return torch.cat(all_chunk_states, dim=1)
