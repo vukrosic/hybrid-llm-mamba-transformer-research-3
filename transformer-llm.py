@@ -382,8 +382,12 @@ def parallel_scan_log(A, B_u):
             new_A = torch.where(mask, A_scan[:, :padded_seq_len] * A_prev, A_scan[:, :padded_seq_len])
             new_B = torch.where(mask, A_scan[:, :padded_seq_len] * B_prev + B_scan[:, :padded_seq_len], B_scan[:, :padded_seq_len])
             
-            A_scan[:, :padded_seq_len] = new_A
-            B_scan[:, :padded_seq_len] = new_B
+            # Avoid in-place writes into tensors that may have active views in the autograd graph
+            A_scan_next = A_scan.clone()
+            B_scan_next = B_scan.clone()
+            A_scan_next[:, :padded_seq_len] = new_A
+            B_scan_next[:, :padded_seq_len] = new_B
+            A_scan, B_scan = A_scan_next, B_scan_next
     
     # Return only the valid sequence length
     return B_scan[:, :seq_len]
