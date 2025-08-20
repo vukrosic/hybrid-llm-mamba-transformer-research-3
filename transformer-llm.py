@@ -367,21 +367,34 @@ def parallel_associative_scan(A, B_u, chunk_size=64):
         if chunk_states.shape[1] > 0:
             chunk_final_states.append(chunk_states[:, -1])
     
-    # Inter-chunk state propagation (simplified)
+    # Inter-chunk state propagation (avoid in-place operations)
     if len(chunk_final_states) > 1:
         # Propagate states between chunks
+        corrected_chunks = []
+        corrected_chunks.append(all_chunk_states[0])  # First chunk is unchanged
+        
         for chunk_idx in range(1, len(all_chunk_states)):
             # Add contribution from previous chunks
             prev_final = chunk_final_states[chunk_idx - 1]
             current_chunk = all_chunk_states[chunk_idx]
+            
+            # Create new tensor instead of modifying in-place
+            corrected_chunk = torch.zeros_like(current_chunk)
             
             # Apply previous state to all positions in current chunk
             for t in range(current_chunk.shape[1]):
                 global_t = chunk_idx * chunk_size + t
                 if global_t < seq_len:
                     A_t = A[:, global_t]  # [batch, num_heads, head_dim, state_size]
-                    # Element-wise multiplication and addition
-                    current_chunk[:, t] = A_t * prev_final + current_chunk[:, t]
+                    # Element-wise multiplication and addition (no in-place)
+                    corrected_chunk[:, t] = A_t * prev_final + current_chunk[:, t]
+                else:
+                    corrected_chunk[:, t] = current_chunk[:, t]
+            
+            corrected_chunks.append(corrected_chunk)
+        
+        # Use corrected chunks
+        all_chunk_states = corrected_chunks
     
     # Concatenate all chunks
     return torch.cat(all_chunk_states, dim=1)
