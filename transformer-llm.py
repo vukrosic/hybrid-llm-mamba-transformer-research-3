@@ -17,6 +17,9 @@ import os
 import pickle
 warnings.filterwarnings('ignore')
 
+# Enable anomaly detection to find operations that failed to compute gradients
+torch.autograd.set_detect_anomaly(True)
+
 def set_seed(seed: int = 42):
     """Set all random seeds for reproducibility"""
     random.seed(seed)
