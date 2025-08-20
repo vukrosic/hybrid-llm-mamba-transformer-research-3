@@ -20,6 +20,11 @@ warnings.filterwarnings('ignore')
 # Enable anomaly detection to find operations that failed to compute gradients
 torch.autograd.set_detect_anomaly(True)
 
+def check_nan(name, x):
+    if not torch.isfinite(x).all():
+        print(f"⚠️ NaN/Inf detected in {name}: {x}")
+        raise ValueError(f"{name} has NaN/Inf")
+
 def set_seed(seed: int = 42):
     """Set all random seeds for reproducibility"""
     random.seed(seed)
@@ -74,7 +79,7 @@ class ModelConfig:
     grad_clip: float = 1.0
 
     # Technical
-    use_amp: bool = True
+    use_amp: bool = False  # Temporarily disabled for debugging
     vocab_size: Optional[int] = None
 
     def __post_init__(self):
@@ -798,6 +803,7 @@ def evaluate_model(model: nn.Module, val_loader: DataLoader, config: ModelConfig
 
             with autocast(enabled=config.use_amp):
                 logits = model(x)
+                check_nan("logits", logits)
                 loss = F.cross_entropy(logits.view(-1, config.vocab_size), y.view(-1))
 
             total_loss += loss.item() * y.numel()
@@ -887,11 +893,13 @@ def train_model(config: ModelConfig, train_loader: DataLoader, val_loader: DataL
             if config.use_amp:
                 with autocast():
                     logits = model(x)
+                    check_nan("logits", logits)
                     loss = F.cross_entropy(logits.view(-1, config.vocab_size), y.view(-1))
                     loss = loss / config.gradient_accumulation_steps
                 scaler.scale(loss).backward()
             else:
                 logits = model(x)
+                check_nan("logits", logits)
                 loss = F.cross_entropy(logits.view(-1, config.vocab_size), y.view(-1))
                 loss = loss / config.gradient_accumulation_steps
                 loss.backward()
