@@ -314,35 +314,38 @@ class MultiHeadAttention(nn.Module):
 def selective_scan_naive(u, dt, A, B, C, D):
     """
     Naive implementation of selective scan for Mamba-2
-    u: [batch, seq_len, groups, head_dim]
-    dt: [batch, seq_len, groups, head_dim] 
-    A: [groups, head_dim, state_size]
-    B: [batch, seq_len, groups, state_size]
-    C: [batch, seq_len, groups, state_size]
-    D: [groups, head_dim]
+    u: [batch, seq_len, num_heads, head_dim]
+    dt: [batch, seq_len, num_heads, head_dim] 
+    A: [num_heads, head_dim, state_size]
+    B: [batch, seq_len, num_heads, state_size]
+    C: [batch, seq_len, num_heads, state_size]
+    D: [num_heads]
     """
-    batch, seq_len, groups, head_dim = u.shape
+    batch, seq_len, num_heads, head_dim = u.shape
     state_size = A.shape[-1]
     
     # Initialize state
-    h = torch.zeros(batch, groups, head_dim, state_size, device=u.device, dtype=u.dtype)
+    h = torch.zeros(batch, num_heads, head_dim, state_size, device=u.device, dtype=u.dtype)
     outputs = []
     
     for t in range(seq_len):
         # Discretize A and B
-        dA = torch.exp(-dt[:, t].unsqueeze(-1) * A)  # [batch, groups, head_dim, state_size]
-        dB = dt[:, t].unsqueeze(-1) * B[:, t].unsqueeze(-2)  # [batch, groups, head_dim, state_size]
+        dA = torch.exp(-dt[:, t].unsqueeze(-1) * A)  # [batch, num_heads, head_dim, state_size]
+        dB = dt[:, t].unsqueeze(-1) * B[:, t].unsqueeze(-2)  # [batch, num_heads, head_dim, state_size]
         
         # State update
         h = dA * h + dB * u[:, t].unsqueeze(-1)
         
         # Compute output
-        y = torch.einsum('bghd,bgd->bgh', h, C[:, t])  # [batch, groups, head_dim]
-        y = y + D.unsqueeze(0) * u[:, t]  # Skip connection
+        y = torch.einsum('bghd,bgd->bgh', h, C[:, t])  # [batch, num_heads, head_dim]
+        
+        # Skip connection - D needs to be expanded properly
+        D_expanded = D.unsqueeze(0).unsqueeze(-1).expand(batch, num_heads, head_dim)  # [batch, num_heads, head_dim]
+        y = y + D_expanded * u[:, t]  # Skip connection
         
         outputs.append(y)
     
-    return torch.stack(outputs, dim=1)  # [batch, seq_len, groups, head_dim]
+    return torch.stack(outputs, dim=1)  # [batch, seq_len, num_heads, head_dim]
 
 class Mamba2Mixer(nn.Module):
     """Simplified Mamba-2 mixer for hybrid architecture"""
