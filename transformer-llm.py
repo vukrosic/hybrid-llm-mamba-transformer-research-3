@@ -330,35 +330,26 @@ def selective_scan_memory_efficient(u, dt, A, B, C, D):
     # Initialize output tensor
     output = torch.zeros_like(u)
     
-    # Initialize state - use smaller dtype if possible
+    # Initialize state
     h = torch.zeros(batch, num_heads, head_dim, state_size, 
                    device=u.device, dtype=u.dtype)
     
-    # Process in chunks to save memory
-    chunk_size = min(32, seq_len)  # Process 32 tokens at a time
-    
-    for chunk_start in range(0, seq_len, chunk_size):
-        chunk_end = min(chunk_start + chunk_size, seq_len)
+    # Process sequentially but avoid in-place operations that break gradients
+    for t in range(seq_len):
+        # Discretize A and B
+        dt_t = dt[:, t].unsqueeze(-1)  # [batch, num_heads, head_dim, 1]
         
-        for t in range(chunk_start, chunk_end):
-            # Discretize A and B - reuse tensors when possible
-            dt_t = dt[:, t].unsqueeze(-1)  # [batch, num_heads, head_dim, 1]
-            
-            # State update (in-place where possible)
-            dA = torch.exp(-dt_t * A)  # [batch, num_heads, head_dim, state_size]
-            dB = dt_t * B[:, t].unsqueeze(-2)  # [batch, num_heads, head_dim, state_size]
-            
-            h.mul_(dA).add_(dB * u[:, t].unsqueeze(-1))
-            
-            # Compute output
-            y = torch.einsum('bghd,bgd->bgh', h, C[:, t])
-            y.add_(D_expanded * u[:, t])  # Skip connection
-            
-            output[:, t] = y
+        dA = torch.exp(-dt_t * A)  # [batch, num_heads, head_dim, state_size]
+        dB = dt_t * B[:, t].unsqueeze(-2)  # [batch, num_heads, head_dim, state_size]
         
-        # Clear some memory periodically
-        if chunk_start > 0:
-            torch.cuda.empty_cache()
+        # State update (avoid in-place operations)
+        h = dA * h + dB * u[:, t].unsqueeze(-1)
+        
+        # Compute output
+        y = torch.einsum('bghd,bgd->bgh', h, C[:, t])
+        y = y + D_expanded * u[:, t]  # Skip connection
+        
+        output[:, t] = y
     
     return output
 
