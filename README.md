@@ -94,7 +94,7 @@ Modify `HybridConfig` in `hybrid_llm.py` to adjust:
 - Training parameters
 - Architecture choices
 
-## 📈 Performance
+## 📈 Performance 
 
 - **Training**: Optimized with AMP, gradient clipping, and efficient data loading
 - **Inference**: Fast generation with temperature and top-k sampling
