@@ -10,8 +10,8 @@ export CUDA_VISIBLE_DEVICES=0
 
 # Common settings for all experiments
 DEBUG_FLAG=""  # Set to "--debug" for quick testing
-STEPS=300    # Number of training steps
-USE_WANDB=""   # Set to "--use_wandb" to enable W&B logging
+STEPS=10000    # Number of training steps
+USE_WANDB="--use_wandb"   # Set to "" to disable W&B logging
 
 echo "🚀 Starting Hybrid LLM Architecture Experiments"
 echo "================================================"

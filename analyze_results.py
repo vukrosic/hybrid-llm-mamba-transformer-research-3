@@ -22,11 +22,16 @@ def collect_results():
                     if metrics_file.exists():
                         with open(metrics_file) as mf:
                             metrics = json.load(mf)
-                            # Add convergence speed (steps to reach loss < 3.0)
-                            for i, loss in enumerate(metrics['train_loss']):
-                                if loss < 3.0:
-                                    result['convergence_steps'] = metrics['step'][i]
-                                    break
+                                                # Add convergence speed (steps to reach loss < 3.0)
+                    if 'train_loss' in metrics and 'step' in metrics:
+                        for i, loss in enumerate(metrics['train_loss']):
+                            if loss < 3.0:
+                                result['convergence_steps'] = metrics['step'][i]
+                                break
+                        else:
+                            result['convergence_steps'] = None
+                    else:
+                        result['convergence_steps'] = None
                     
                     results.append(result)
     
@@ -45,9 +50,17 @@ def plot_results(df):
     axes[0, 0].set_title('Model Performance')
     
     # Plot 2: Convergence speed
-    if 'convergence_steps' in df.columns:
-        axes[0, 1].barh(df['pattern_name'], df['convergence_steps'])
-        axes[0, 1].set_xlabel('Steps to Convergence')
+    if 'convergence_steps' in df.columns and df['convergence_steps'].notna().any():
+        valid_convergence = df[df['convergence_steps'].notna()]
+        if len(valid_convergence) > 0:
+            axes[0, 1].barh(valid_convergence['pattern_name'], valid_convergence['convergence_steps'])
+            axes[0, 1].set_xlabel('Steps to Convergence')
+            axes[0, 1].set_title('Training Efficiency')
+        else:
+            axes[0, 1].text(0.5, 0.5, 'No convergence data', ha='center', va='center', transform=axes[0, 1].transAxes)
+            axes[0, 1].set_title('Training Efficiency')
+    else:
+        axes[0, 1].text(0.5, 0.5, 'No convergence data', ha='center', va='center', transform=axes[0, 1].transAxes)
         axes[0, 1].set_title('Training Efficiency')
     
     # Plot 3: Pattern types pie chart
@@ -81,7 +94,13 @@ def plot_results(df):
     # Print summary table
     print("\n📊 RESULTS SUMMARY")
     print("=" * 60)
-    summary = df[['pattern', 'final_val_perplexity', 'convergence_steps']].sort_values('final_val_perplexity')
+    
+    # Select available columns
+    available_cols = ['pattern', 'final_val_perplexity']
+    if 'convergence_steps' in df.columns:
+        available_cols.append('convergence_steps')
+    
+    summary = df[available_cols].sort_values('final_val_perplexity')
     print(summary.to_string(index=False))
     
     return df
