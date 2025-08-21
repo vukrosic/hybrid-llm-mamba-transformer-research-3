@@ -200,8 +200,7 @@ def main():
     print(f" Data: {len(train_tokens):,} train tokens, {len(val_tokens):,} val tokens")
     print(f"📊 Data: {len(train_dataset)} train sequences, {len(val_dataset)} val sequences")
     
-    # Create dataset
-    train_dataset = TextDataset(all_tokens, config.max_seq_len)
+    # Create DataLoader for training
     train_loader = DataLoader(
         train_dataset, 
         batch_size=config.batch_size,
