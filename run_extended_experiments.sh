@@ -1,3 +1,6 @@
+# pkill -f "experimental_training_extended.py"
+# ps aux | grep "experimental_training_extended.py" | awk '{print $2}' | xargs kill
+
 #!/bin/bash
 # run_extended_experiments.sh - Extended experiments on 8x RTX 4090 GPUs
 # Scaling to 30k steps with parallel execution across all GPUs
