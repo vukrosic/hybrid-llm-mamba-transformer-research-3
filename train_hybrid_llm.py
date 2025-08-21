@@ -1,3 +1,7 @@
+import os
+# Set this before importing transformers to avoid the warning
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -179,9 +183,9 @@ def main():
         train_dataset, 
         batch_size=config.batch_size,
         shuffle=True,
-        num_workers=8,  # More workers for faster data loading
+        num_workers=2,  # Reduced from 8 to 2 for better compatibility
         pin_memory=True,
-        persistent_workers=True,  # Keep workers alive
+        persistent_workers=True,
         prefetch_factor=2
     )
     
