@@ -14,6 +14,10 @@ from torch.amp import autocast, GradScaler
 import argparse
 from datetime import datetime
 import wandb
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Import your existing classes
 from train_hybrid_llm import HybridConfig, SimpleSSM, SimpleAttention, HybridBlock, HybridModel, TextDataset
