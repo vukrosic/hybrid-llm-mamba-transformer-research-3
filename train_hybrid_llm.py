@@ -28,7 +28,7 @@ class HybridConfig:
     # Training
     max_seq_len: int = 512
     batch_size: int = 32  # Increased for better GPU utilization
-    num_documents: int = 5000
+    num_documents: int = 50000
     learning_rate: float = 5e-4
     num_steps: int = 10000
     

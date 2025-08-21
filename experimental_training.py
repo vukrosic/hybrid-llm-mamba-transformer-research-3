@@ -50,7 +50,7 @@ class ExperimentConfig(HybridConfig):
     num_eval_batches: int = 100  # More batches for stable eval
     
     # Increased data for better training
-    num_documents: int = 5000  # Increased from 2000
+    num_documents: int = 50000  # Increased from 2000
     num_steps: int = 10000  # Increased from 5000
     
     # Better hyperparameters
