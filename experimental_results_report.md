@@ -92,6 +92,7 @@ The performance improvement from hybrid architectures justifies the modest param
 1. **Longer sequences**: Test on sequences longer than current max length
 2. **Domain adaptation**: Evaluate on different text domains
 3. **Inference speed**: Measure real-world deployment performance
+4. **Data uniqueness**: With 50k documents, 10k steps will use unique data
 
 ## Technical Details
 
@@ -103,10 +104,11 @@ The performance improvement from hybrid architectures justifies the modest param
 - **Batch Size**: 16 with gradient accumulation
 
 ### 📚 **Dataset Characteristics**
-- **Training Tokens**: 2,718,238
-- **Validation Tokens**: 484,153
+- **Training Tokens**: ~27M (estimated for 50k documents)
+- **Validation Tokens**: ~5M (estimated for 50k documents)
 - **Sequence Length**: Optimized for each pattern
 - **Source**: SmolLM Corpus (Cosmopedia-v2)
+- **Data Volume**: 50,000 documents (10x increase from previous runs)
 
 ### 🎯 **Training Configuration**
 - **Optimizer**: AdamW with weight decay

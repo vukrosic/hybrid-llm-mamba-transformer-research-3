@@ -21,24 +21,9 @@ load_dotenv()
 
 # Import your existing classes
 from train_hybrid_llm import HybridConfig, SimpleSSM, SimpleAttention, HybridBlock, HybridModel
+from shared_data import shared_data_manager
 
-class TextDataset(Dataset):
-    def __init__(self, tokens, max_length, stride=None, pad_token_id=0):
-        self.tokens = tokens
-        self.max_length = max_length
-        self.stride = stride if stride is not None else max_length
-        self.pad_token_id = pad_token_id
 
-    def __len__(self):
-        return max(1, (len(self.tokens) - self.max_length) // self.stride + 1)
-
-    def __getitem__(self, idx):
-        start = idx * self.stride
-        end = min(start + self.max_length, len(self.tokens))
-        chunk = self.tokens[start:end]
-        if len(chunk) < self.max_length:
-            chunk = chunk + [self.pad_token_id] * (self.max_length - len(chunk))
-        return torch.tensor(chunk, dtype=torch.long)
 
 @dataclass
 class ExperimentConfig(HybridConfig):
@@ -50,7 +35,7 @@ class ExperimentConfig(HybridConfig):
     num_eval_batches: int = 100  # More batches for stable eval
     
     # Increased data for better training
-    num_documents: int = 50000  # Increased from 2000
+    num_documents: int = 50000  # Increased from 5000 for longer training runs
     num_steps: int = 10000  # Increased from 5000
     
     # Better hyperparameters
@@ -230,6 +215,7 @@ def main():
     parser.add_argument('--debug', action='store_true', help='Debug mode (fewer documents)')
     parser.add_argument('--steps', type=int, default=None, help='Number of training steps')
     parser.add_argument('--use_wandb', action='store_true', help='Log to W&B')
+    parser.add_argument('--force_reload_data', action='store_true', help='Force reload and retokenize data')
     args = parser.parse_args()
     
     # Setup config
@@ -274,69 +260,14 @@ def main():
     print(f"🔬 Experiment: {run_name}")
     print(f"📊 Pattern: {config.layer_pattern} ({config.num_layers} layers)")
     
-    # Load data
+    # Load data using shared data manager
     print("Loading data...")
-    tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM-135M")
-    tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
+    train_loader, val_loader = shared_data_manager.load_or_create_datasets(config, force_reload=args.force_reload_data)
+    
+    # Get tokenizer from shared manager
+    tokenizer = shared_data_manager.get_tokenizer()
     config.pad_token_id = tokenizer.pad_token_id
-    
-    # Load dataset
-    dataset = load_dataset("HuggingFaceTB/smollm-corpus", "cosmopedia-v2", 
-                          split="train", streaming=True)
-    
-    # Tokenize documents
-    all_documents = []
-    for i, item in enumerate(tqdm(dataset, total=config.num_documents, desc="Tokenizing")):
-        if i >= config.num_documents:
-            break
-        tokens = tokenizer.encode(item["text"][:4000], add_special_tokens=False)  # Increased from 3000
-        all_documents.append(tokens)
-    
-    # Better train/val split
-    n_train = int(len(all_documents) * 0.85)  # 85/15 split instead of 90/10
-    train_docs = all_documents[:n_train]
-    val_docs = all_documents[n_train:]
-    
-    # Flatten
-    train_tokens = [token for doc in train_docs for token in doc]
-    val_tokens = [token for doc in val_docs for token in doc]
-    
     config.vocab_size = tokenizer.vocab_size
-    
-    # Create datasets - reduced overlap for training
-    train_dataset = TextDataset(
-        train_tokens, 
-        config.max_seq_len, 
-        stride=int(config.max_seq_len * 0.8),  # 80% stride instead of 50%
-        pad_token_id=config.pad_token_id
-    )
-    val_dataset = TextDataset(
-        val_tokens, 
-        config.max_seq_len, 
-        stride=config.max_seq_len, 
-        pad_token_id=config.pad_token_id
-    )
-    
-    print(f"📚 Data: {len(train_tokens):,} train tokens, {len(val_tokens):,} val tokens")
-    print(f"📊 Data: {len(train_dataset)} train sequences, {len(val_dataset)} val sequences")
-    
-    # Create DataLoaders
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=config.batch_size,
-        shuffle=True, 
-        num_workers=4, 
-        pin_memory=True,
-        drop_last=True  # Drop last incomplete batch
-    )
-    
-    val_loader = DataLoader(
-        val_dataset, 
-        batch_size=config.batch_size,
-        shuffle=False, 
-        num_workers=4, 
-        pin_memory=True
-    )
     
     # Create model with improved SSM if needed
     model = HybridModel(config).to(device)

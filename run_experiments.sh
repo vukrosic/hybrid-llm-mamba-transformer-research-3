@@ -12,6 +12,7 @@ export CUDA_VISIBLE_DEVICES=0
 DEBUG_FLAG=""  # Set to "--debug" for quick testing
 STEPS=10000    # Number of training steps
 USE_WANDB="--use_wandb"   # Set to "" to disable W&B logging
+FORCE_RELOAD=""  # Set to "--force_reload_data" to retokenize data
 
 echo "🚀 Starting Hybrid LLM Architecture Experiments"
 echo "================================================"
@@ -35,6 +36,7 @@ run_experiment() {
         --steps $STEPS \
         $DEBUG_FLAG \
         $USE_WANDB \
+        $FORCE_RELOAD \
         2>&1 | tee "logs/${name}.log"
     
     echo "   Completed at: $(date '+%Y-%m-%d %H:%M:%S')"
