@@ -12,12 +12,34 @@ STEPS=30000    # Increased from 10k to 30k steps
 USE_WANDB="--use_wandb"   # Set to "" to disable W&B logging
 FORCE_RELOAD=""  # Set to "--force_reload_data" to retokenize data
 
+# Detect available GPUs
+AVAILABLE_GPUS=$(nvidia-smi --list-gpus | wc -l)
 echo "🚀 Starting Extended Hybrid LLM Architecture Experiments"
 echo "========================================================"
-echo "🎯 Running 8 experiments in PARALLEL on 8x RTX 4090 GPUs"
+echo "🔍 Detected: $AVAILABLE_GPUS GPUs available"
 echo "Training Steps: $STEPS (3x longer than original)"
 echo "Data: Will be scaled accordingly"
-echo "GPUs: 0,1,2,3,4,5,6,7 (one experiment per GPU)"
+
+if [ $AVAILABLE_GPUS -eq 0 ]; then
+    echo "❌ No GPUs detected! Please check nvidia-smi"
+    exit 1
+fi
+
+# Define all 8 experiments
+declare -a EXPERIMENTS=(
+    "MAMAMAMAMAMA:mama_alternating_12L_extended:MAMA alternating pattern scaled to 12 layers"
+    "MAMAMAMAMAMAMAMAM:mama_alternating_15L_extended:MAMA alternating pattern scaled to 15 layers"
+    "MMAAMMAAMMAAMMAA:mmaammaa_pattern_12L_extended:MMAAMMAA pattern scaled to 12 layers"
+    "MMAAMMAAMMAAMMA:mmaammaa_pattern_14L_extended:MMAAMMAA pattern scaled to 14 layers"
+    "MAMAMAMAMAMAMAMA:mama_alternating_10L_extended:MAMA alternating pattern with 10 layers"
+    "MMMMAAAAAA:grouped_separated_10L:Grouped pattern with separated M and A blocks"
+    "MMAAAMMMAAA:mixed_grouped_11L:Mixed grouped pattern with varied block sizes"
+    "MAMAMAMAMAMAM:mama_alternating_13L_extended:MAMA alternating pattern with 13 layers"
+)
+
+NUM_EXPERIMENTS=${#EXPERIMENTS[@]}
+echo "📊 Total experiments: $NUM_EXPERIMENTS"
+echo "🎯 Will run experiments in batches across $AVAILABLE_GPUS GPUs"
 date
 
 # Function to run experiment on specific GPU
@@ -46,33 +68,78 @@ run_experiment_on_gpu() {
         2>&1 | tee "logs_extended/${name}_gpu${gpu_id}.log" &
     
     # Store the process ID for this GPU
-    eval "PID_GPU_$gpu_id=$!"
-    echo "   GPU $gpu_id PID: $(eval echo \$PID_GPU_$gpu_id)"
+    local current_pid=$!
+    eval "PID_GPU_$gpu_id=$current_pid"
+    echo "   GPU $gpu_id PID: $current_pid"
 }
 
 # Function to wait for all experiments to complete
 wait_for_all_experiments() {
     echo ""
-    echo "⏳ Waiting for all 8 experiments to complete..."
-    echo "================================================"
+    echo "⏳ Waiting for all experiments to complete..."
+    echo "============================================="
     
-    local all_pids=""
-    for gpu in {0..7}; do
-        local pid_var="PID_GPU_$gpu"
-        local pid=$(eval echo \$$pid_var)
+    # Wait for all background processes
+    for pid in "${RUNNING_PIDS[@]}"; do
         if [ ! -z "$pid" ]; then
-            all_pids="$all_pids $pid"
+            wait $pid
+            local exit_code=$?
+            echo "Process $pid completed with exit code: $exit_code"
         fi
     done
     
-    # Wait for all background processes
-    for pid in $all_pids; do
-        wait $pid
-        local exit_code=$?
-        echo "Process $pid completed with exit code: $exit_code"
-    done
-    
     echo "✅ All experiments completed at: $(date '+%Y-%m-%d %H:%M:%S')"
+}
+
+# Function to run experiments adaptively across available GPUs
+run_experiments_adaptively() {
+    echo ""
+    echo "🚀 Launching experiments adaptively..."
+    echo "======================================"
+    
+    # Array to store all running PIDs
+    RUNNING_PIDS=()
+    
+    if [ $AVAILABLE_GPUS -ge $NUM_EXPERIMENTS ]; then
+        # If we have enough GPUs, run all experiments in parallel
+        echo "✨ Sufficient GPUs: Running all $NUM_EXPERIMENTS experiments in parallel"
+        for i in "${!EXPERIMENTS[@]}"; do
+            IFS=':' read -r pattern name description <<< "${EXPERIMENTS[$i]}"
+            gpu_id=$i
+            run_experiment_on_gpu $gpu_id "$pattern" "$name" "$description"
+            current_pid=$(eval echo \$PID_GPU_$gpu_id)
+            RUNNING_PIDS+=($current_pid)
+        done
+    else
+        # If we have fewer GPUs than experiments, run in batches
+        echo "🔄 Limited GPUs: Running experiments in batches"
+        
+        experiment_idx=0
+        while [ $experiment_idx -lt $NUM_EXPERIMENTS ]; do
+            # Start as many experiments as we have GPUs
+            batch_pids=()
+            for gpu_id in $(seq 0 $((AVAILABLE_GPUS-1))); do
+                if [ $experiment_idx -lt $NUM_EXPERIMENTS ]; then
+                    IFS=':' read -r pattern name description <<< "${EXPERIMENTS[$experiment_idx]}"
+                    echo "🔬 Batch: Starting experiment $((experiment_idx+1))/$NUM_EXPERIMENTS on GPU $gpu_id"
+                    run_experiment_on_gpu $gpu_id "$pattern" "$name" "$description"
+                    current_pid=$(eval echo \$PID_GPU_$gpu_id)
+                    batch_pids+=($current_pid)
+                    RUNNING_PIDS+=($current_pid)
+                    experiment_idx=$((experiment_idx+1))
+                fi
+            done
+            
+            # If this isn't the last batch, wait for current batch to complete
+            if [ $experiment_idx -lt $NUM_EXPERIMENTS ]; then
+                echo "⏳ Waiting for current batch to complete before starting next batch..."
+                for pid in "${batch_pids[@]}"; do
+                    wait $pid
+                done
+                echo "✅ Batch completed, starting next batch..."
+            fi
+        done
+    fi
 }
 
 # Function to monitor GPU usage
@@ -85,49 +152,17 @@ monitor_gpus() {
 }
 
 # ============================================
-# EXTENDED EXPERIMENTS - PARALLEL EXECUTION ON 8 GPUs
+# EXTENDED EXPERIMENTS - ADAPTIVE PARALLEL EXECUTION
 # ============================================
 echo ""
-echo "📊 EXTENDED EXPERIMENTS: 8 Patterns Running in Parallel"
-echo "======================================================="
+echo "📊 EXTENDED EXPERIMENTS: Adaptive GPU Allocation"
+echo "================================================"
 
 # Check initial GPU status
 monitor_gpus
 
-# Launch all 8 experiments in parallel, one per GPU
-echo "🚀 Launching all experiments..."
-
-# GPU 0: MAMA alternating scaled to 12 layers
-run_experiment_on_gpu 0 "MAMAMAMAMAMA" "mama_alternating_12L_extended" \
-    "MAMA alternating pattern scaled to 12 layers"
-
-# GPU 1: MAMA alternating scaled to 15 layers (longest)
-run_experiment_on_gpu 1 "MAMAMAMAMAMAMAMAM" "mama_alternating_15L_extended" \
-    "MAMA alternating pattern scaled to 15 layers"
-
-# GPU 2: MMAAMMAA pattern scaled to 12 layers
-run_experiment_on_gpu 2 "MMAAMMAAMMAAMMAA" "mmaammaa_pattern_12L_extended" \
-    "MMAAMMAA pattern scaled to 12 layers"
-
-# GPU 3: MMAAMMAA pattern scaled to 14 layers
-run_experiment_on_gpu 3 "MMAAMMAAMMAAMMA" "mmaammaa_pattern_14L_extended" \
-    "MMAAMMAA pattern scaled to 14 layers"
-
-# GPU 4: MAMA alternating with 10 layers
-run_experiment_on_gpu 4 "MAMAMAMAMAMAMAMA" "mama_alternating_10L_extended" \
-    "MAMA alternating pattern with 10 layers"
-
-# GPU 5: Grouped pattern - More separated M and A blocks
-run_experiment_on_gpu 5 "MMMMAAAAAA" "grouped_separated_10L" \
-    "Grouped pattern with separated M and A blocks"
-
-# GPU 6: Mixed grouped pattern with varied block sizes
-run_experiment_on_gpu 6 "MMAAAMMMAAA" "mixed_grouped_11L" \
-    "Mixed grouped pattern with varied block sizes"
-
-# GPU 7: Long MAMA with 13 layers
-run_experiment_on_gpu 7 "MAMAMAMAMAMAM" "mama_alternating_13L_extended" \
-    "MAMA alternating pattern with 13 layers"
+# Run experiments adaptively based on available GPUs
+run_experiments_adaptively
 
 # Give processes a moment to start
 sleep 5

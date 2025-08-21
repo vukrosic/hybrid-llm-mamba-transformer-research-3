@@ -40,27 +40,37 @@ def get_gpu_info():
     return []
 
 def get_experiment_status():
-    """Check status of all 8 experiments"""
+    """Check status of all experiments (adaptive to available GPUs)"""
     experiments = [
-        ("mama_alternating_12L_extended", "MAMAMAMAMAMA", 0),
-        ("mama_alternating_15L_extended", "MAMAMAMAMAMAMAMAM", 1),
-        ("mmaammaa_pattern_12L_extended", "MMAAMMAAMMAAMMAA", 2),
-        ("mmaammaa_pattern_14L_extended", "MMAAMMAAMMAAMMA", 3),
-        ("mama_alternating_10L_extended", "MAMAMAMAMAMAMAMA", 4),
-        ("grouped_separated_10L", "MMMMAAAAAA", 5),
-        ("mixed_grouped_11L", "MMAAAMMMAAA", 6),
-        ("mama_alternating_13L_extended", "MAMAMAMAMAMAM", 7)
+        ("mama_alternating_12L_extended", "MAMAMAMAMAMA"),
+        ("mama_alternating_15L_extended", "MAMAMAMAMAMAMAMAM"),
+        ("mmaammaa_pattern_12L_extended", "MMAAMMAAMMAAMMAA"),
+        ("mmaammaa_pattern_14L_extended", "MMAAMMAAMMAAMMA"),
+        ("mama_alternating_10L_extended", "MAMAMAMAMAMAMAMA"),
+        ("grouped_separated_10L", "MMMMAAAAAA"),
+        ("mixed_grouped_11L", "MMAAAMMMAAA"),
+        ("mama_alternating_13L_extended", "MAMAMAMAMAMAM")
     ]
     
     status_info = []
-    for name, pattern, gpu_id in experiments:
+    for exp_idx, (name, pattern) in enumerate(experiments):
         exp_dir = f"experiments_extended/{name}"
-        log_file = f"logs_extended/{name}_gpu{gpu_id}.log"
+        
+        # Find the log file (it might be on any GPU)
+        log_file = None
+        for gpu_id in range(8):  # Check up to 8 GPUs
+            potential_log = f"logs_extended/{name}_gpu{gpu_id}.log"
+            if os.path.exists(potential_log):
+                log_file = potential_log
+                break
+        
+        if log_file is None:
+            log_file = f"logs_extended/{name}.log"  # Fallback
         
         status = {
             'name': name,
             'pattern': pattern,
-            'gpu_id': gpu_id,
+            'gpu_id': 'Auto',  # Will be determined from log file
             'status': 'Not Started',
             'current_step': 0,
             'total_steps': 30000,
