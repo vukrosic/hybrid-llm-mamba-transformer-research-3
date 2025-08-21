@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from hybrid_llm import HybridModel, HybridConfig
+from train_hybrid_llm import HybridModel, HybridConfig
 from transformers import AutoTokenizer
 import argparse
 

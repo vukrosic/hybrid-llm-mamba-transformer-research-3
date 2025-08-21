@@ -16,7 +16,7 @@ from datetime import datetime
 import wandb
 
 # Import your existing classes
-from train import HybridConfig, SimpleSSM, SimpleAttention, HybridBlock, HybridModel, TextDataset
+from train_hybrid_llm import HybridConfig, SimpleSSM, SimpleAttention, HybridBlock, HybridModel, TextDataset
 
 @dataclass
 class ExperimentConfig(HybridConfig):
