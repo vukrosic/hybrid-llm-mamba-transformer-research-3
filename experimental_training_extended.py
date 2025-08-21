@@ -15,7 +15,6 @@ import argparse
 from datetime import datetime
 import wandb
 from dotenv import load_dotenv
-import shutil
 
 # Load environment variables from .env file
 load_dotenv()
@@ -25,36 +24,34 @@ from train_hybrid_llm import HybridConfig, SimpleSSM, SimpleAttention, HybridBlo
 from shared_data import shared_data_manager
 
 
-
 @dataclass
-class ExperimentConfig(HybridConfig):
-    """Extended config for experiments"""
-    experiment_name: str = "pattern_ablation"
+class ExtendedExperimentConfig(HybridConfig):
+    """Extended config for longer experiments with more data"""
+    experiment_name: str = "extended_pattern_ablation"
     pattern_name: str = "MMAMAMAM"
-    eval_every: int = 200  # More frequent evaluation
-    save_every: int = 1000
-    num_eval_batches: int = 50  # Reduced since effective batch size increased
+    eval_every: int = 500  # Less frequent evaluation for longer runs
+    save_every: int = 2000
+    num_eval_batches: int = 100  # More eval batches for better estimates
     
-    # Increased data for better training
-    num_documents: int = 50000  # Increased from 5000 for longer training runs
-    num_steps: int = 10000  # Increased from 5000
+    # Significantly increased data for 30k step training
+    num_documents: int = 150000  # 3x increase from 50k for longer training
+    num_steps: int = 30000  # 3x increase from 10k
     
-    # Better hyperparameters
-    dropout: float = 0.1  # Reduced back to 0.1
-    learning_rate: float = 4e-4  # Increased for larger batch size
-    weight_decay: float = 0.01  # Add weight decay
-    warmup_steps: int = 1000  # Increased warmup for larger batch size
+    # Optimized hyperparameters for longer training
+    dropout: float = 0.1
+    learning_rate: float = 3e-4  # Slightly reduced for longer training
+    weight_decay: float = 0.01
+    warmup_steps: int = 3000  # 3x increase for longer schedule
     
-    # Better batch size for stability
-    batch_size: int = 32  # Doubled from 16 for better GPU utilization
-    gradient_accumulation_steps: int = 1  # Reduced since batch size increased
-    # Effective batch size = 32 * 1 = 32 (same as before but more efficient)
+    # Maintain good batch size
+    batch_size: int = 32
+    gradient_accumulation_steps: int = 1
     
     # HF Hub
-    hf_repo: str = "vukrosic/hybrid-llm"
+    hf_repo: str = "vukrosic/hybrid-llm-extended"
     
     def get_run_name(self):
-        return f"{self.pattern_name}_{self.num_layers}L_{self.hidden_size}H_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        return f"{self.pattern_name}_{self.num_layers}L_extended_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
 
 class ImprovedSSM(nn.Module):
@@ -113,7 +110,7 @@ class ImprovedSSM(nn.Module):
 
 
 class MetricsTracker:
-    """Simple metrics tracking"""
+    """Enhanced metrics tracking for longer runs"""
     def __init__(self):
         self.metrics = {
             'train_loss': [],
@@ -128,7 +125,7 @@ class MetricsTracker:
         
         # Add moving averages for smoother tracking
         self.train_loss_ema = None
-        self.ema_alpha = 0.95
+        self.ema_alpha = 0.98  # Slower EMA for longer runs
     
     def update(self, step: int, **kwargs):
         self.metrics['step'].append(step)
@@ -221,14 +218,14 @@ def main():
     args = parser.parse_args()
     
     # Setup config
-    config = ExperimentConfig(
+    config = ExtendedExperimentConfig(
         layer_pattern=args.pattern,
         pattern_name=args.pattern,
         num_layers=len(args.pattern),
     )
     
     if args.debug:
-        config.num_documents = 1000
+        config.num_documents = 5000
         config.num_steps = 1000
         config.eval_every = 100
     
@@ -238,7 +235,7 @@ def main():
     run_name = args.name or config.get_run_name()
     
     # Create experiment directory
-    exp_dir = f"experiments/{run_name}"
+    exp_dir = f"experiments_extended/{run_name}"
     os.makedirs(exp_dir, exist_ok=True)
     os.makedirs(f"{exp_dir}/checkpoints", exist_ok=True)
     
@@ -249,9 +246,10 @@ def main():
     # Initialize wandb if requested
     if args.use_wandb:
         wandb.init(
-            project="hybrid-patterns",
+            project="hybrid-patterns-extended",
             name=run_name,
-            config=asdict(config)
+            config=asdict(config),
+            tags=["extended", "30k-steps", f"{len(args.pattern)}L"]
         )
     
     # Setup
@@ -259,11 +257,13 @@ def main():
     torch.set_float32_matmul_precision('high')
     device = torch.device('cuda')
     
-    print(f"🔬 Experiment: {run_name}")
+    print(f"🔬 Extended Experiment: {run_name}")
     print(f"📊 Pattern: {config.layer_pattern} ({config.num_layers} layers)")
+    print(f"⏱️ Steps: {config.num_steps} (30k extended)")
+    print(f"📚 Documents: {config.num_documents} (3x increase)")
     
     # Load data using shared data manager
-    print("Loading data...")
+    print("Loading extended dataset...")
     train_loader, val_loader = shared_data_manager.load_or_create_datasets(config, force_reload=args.force_reload_data)
     
     # Get tokenizer from shared manager
@@ -312,13 +312,13 @@ def main():
     step = 0
     accumulation_counter = 0
     accumulated_loss = 0
-    pbar = tqdm(total=config.num_steps, desc="Training", ncols=120, leave=True, 
+    pbar = tqdm(total=config.num_steps, desc="Extended Training", ncols=140, leave=True, 
                 bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
     
     train_iter = iter(train_loader)
     best_val_loss = float('inf')
     patience_counter = 0
-    max_patience = 10  # Early stopping patience
+    max_patience = 15  # Increased patience for longer runs
     
     while step < config.num_steps:
         # Get batch
@@ -368,7 +368,8 @@ def main():
                 pbar.set_postfix({
                     'loss': f'{accumulated_loss / config.log_every:.4f}',
                     'grad': f'{grad_norm.item():.2f}',
-                    'lr': f'{current_lr:.2e}'
+                    'lr': f'{current_lr:.2e}',
+                    'step': f'{step}/{config.num_steps}'
                 }, refresh=True)
                 
                 if args.use_wandb:
@@ -387,7 +388,8 @@ def main():
                     'grad': f'{grad_norm.item():.2f}',
                     'lr': f'{current_lr:.2e}',
                     'val_loss': f'{val_loss:.4f}',
-                    'val_ppl': f'{val_ppl:.2f}'
+                    'val_ppl': f'{val_ppl:.2f}',
+                    'best': f'{best_val_loss:.4f}'
                 })
                 
                 # Save best model
@@ -401,11 +403,11 @@ def main():
                         'val_loss': val_loss,
                         'val_perplexity': val_ppl
                     }, f"{exp_dir}/checkpoints/best_model.pt")
-                    pbar.write(f"📈 Step {step}: val_loss={val_loss:.4f}, val_ppl={val_ppl:.2f} ✓ New best model saved!")
+                    pbar.write(f"📈 Step {step}: val_loss={val_loss:.4f}, val_ppl={val_ppl:.2f} ✓ New best!")
                 else:
                     patience_counter += 1
                     if patience_counter >= max_patience:
-                        pbar.write(f"⚠️ Early stopping triggered after {patience_counter} evaluations without improvement")
+                        pbar.write(f"⚠️ Early stopping after {patience_counter} evals without improvement")
                         break
             
             # Save checkpoint
@@ -422,13 +424,13 @@ def main():
             pbar.update(1)
             
             # Ensure progress bar is visible
-            if step % 100 == 0:  # Force refresh every 100 steps
+            if step % 200 == 0:  # Force refresh every 200 steps
                 pbar.refresh()
     
     pbar.close()
     
     # Final evaluation with more batches
-    print("\n🔬 Final evaluation...")
+    print("\n🔬 Final extended evaluation...")
     final_val_loss, final_val_ppl = evaluate_model(model, val_loader, config, device, len(val_loader))
     
     # Save final results
@@ -440,7 +442,8 @@ def main():
         'final_val_perplexity': final_val_ppl,
         'best_val_loss': best_val_loss,
         'total_steps': step,
-        'early_stopped': patience_counter >= max_patience
+        'early_stopped': patience_counter >= max_patience,
+        'training_type': 'extended_30k'
     }
     
     with open(f"{exp_dir}/results.json", 'w') as f:
@@ -448,13 +451,20 @@ def main():
     
     metrics.save(f"{exp_dir}/metrics.json")
     
-    print(f"\n✅ Experiment complete!")
+    print(f"\n✅ Extended experiment complete!")
     print(f"📊 Results: val_loss={final_val_loss:.4f}, val_ppl={final_val_ppl:.2f}")
     print(f"🔧 Best val_loss={best_val_loss:.4f}")
     print(f"💾 Saved to {exp_dir}/")
     
     if args.use_wandb:
-        wandb.log(results)
+        # Log final results
+        wandb.log({
+            'final_val_loss': final_val_loss,
+            'final_val_perplexity': final_val_ppl,
+            'best_val_loss': best_val_loss,
+            'num_params': total_params,
+            'total_steps': step
+        })
         wandb.finish()
     
     return results
