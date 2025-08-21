@@ -20,7 +20,25 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import your existing classes
-from train_hybrid_llm import HybridConfig, SimpleSSM, SimpleAttention, HybridBlock, HybridModel, TextDataset
+from train_hybrid_llm import HybridConfig, SimpleSSM, SimpleAttention, HybridBlock, HybridModel
+
+class TextDataset(Dataset):
+    def __init__(self, tokens, max_length, stride=None, pad_token_id=0):
+        self.tokens = tokens
+        self.max_length = max_length
+        self.stride = stride if stride is not None else max_length
+        self.pad_token_id = pad_token_id
+
+    def __len__(self):
+        return max(1, (len(self.tokens) - self.max_length) // self.stride + 1)
+
+    def __getitem__(self, idx):
+        start = idx * self.stride
+        end = min(start + self.max_length, len(self.tokens))
+        chunk = self.tokens[start:end]
+        if len(chunk) < self.max_length:
+            chunk = chunk + [self.pad_token_id] * (self.max_length - len(chunk))
+        return torch.tensor(chunk, dtype=torch.long)
 
 @dataclass
 class ExperimentConfig(HybridConfig):
