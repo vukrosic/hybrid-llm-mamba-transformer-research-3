@@ -7,8 +7,8 @@ mkdir -p experiments_extended
 mkdir -p logs_extended
 
 # Extended settings for longer training
-DEBUG_FLAG=""  # Set to "--debug" for quick testing
-STEPS=30000    # Increased from 10k to 30k steps
+DEBUG_FLAG="--debug"  # Set to "--debug" for quick testing
+STEPS=300    # Increased from 10k to 30k steps
 USE_WANDB="--use_wandb"   # Set to "" to disable W&B logging
 FORCE_RELOAD=""  # Set to "--force_reload_data" to retokenize data
 
