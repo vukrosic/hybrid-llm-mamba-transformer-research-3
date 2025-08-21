@@ -424,14 +424,14 @@ def main():
                 current_lr = scheduler.get_last_lr()[0]
                 metrics.update(
                     step=step,
-                    train_loss=accumulated_loss,
+                    train_loss=accumulated_loss / config.log_every,
                     grad_norm=grad_norm.item(),
                     learning_rate=current_lr,
                     memory_gb=torch.cuda.max_memory_allocated() / 1024**3
                 )
                 
                 pbar.set_postfix({
-                    'loss': f'{accumulated_loss:.4f}',
+                    'loss': f'{accumulated_loss / config.log_every:.4f}',
                     'grad': f'{grad_norm.item():.2f}',
                     'lr': f'{current_lr:.2e}'
                 })
