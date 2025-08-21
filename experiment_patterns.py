@@ -208,7 +208,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--pattern', type=str, default='MMAMAMAM', help='Layer pattern string')
     parser.add_argument('--name', type=str, default=None, help='Experiment name')
-    parser.add_argument('--debug', action='store_true', help='Debug mode (fewer steps)')
+    parser.add_argument('--debug', action='store_true', help='Debug mode (fewer documents)')
+    parser.add_argument('--steps', type=int, default=None, help='Number of training steps (overrides config)')
     parser.add_argument('--use_wandb', action='store_true', help='Log to W&B')
     args = parser.parse_args()
     
@@ -220,9 +221,14 @@ def main():
     )
     
     if args.debug:
-        config.num_steps = 500
-        config.eval_every = 100
-        config.num_documents = 500
+        config.num_documents = 500  # Debug mode just reduces documents
+    
+    if args.steps:
+        config.num_steps = args.steps  # Override steps regardless of debug mode
+    
+    # Adjust eval frequency based on total steps
+    if config.num_steps <= 1000:
+        config.eval_every = max(50, config.num_steps // 5)  # More frequent for short runs
     
     run_name = args.name or config.get_run_name()
     
