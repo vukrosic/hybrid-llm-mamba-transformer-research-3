@@ -310,7 +310,8 @@ def main():
     step = 0
     accumulation_counter = 0
     accumulated_loss = 0
-    pbar = tqdm(total=config.num_steps, desc="Training")
+    pbar = tqdm(total=config.num_steps, desc="Training", ncols=120, leave=True, 
+                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
     
     train_iter = iter(train_loader)
     best_val_loss = float('inf')
@@ -361,11 +362,12 @@ def main():
                     memory_gb=torch.cuda.max_memory_allocated() / 1024**3
                 )
                 
+                # Update progress bar with current metrics
                 pbar.set_postfix({
                     'loss': f'{accumulated_loss / config.log_every:.4f}',
                     'grad': f'{grad_norm.item():.2f}',
                     'lr': f'{current_lr:.2e}'
-                })
+                }, refresh=True)
                 
                 if args.use_wandb:
                     wandb.log(metrics.get_current_metrics(), step=step)
@@ -377,7 +379,14 @@ def main():
                 val_loss, val_ppl = evaluate_model(model, val_loader, config, device, config.num_eval_batches)
                 metrics.update(step=step, val_loss=val_loss, val_perplexity=val_ppl)
                 
-                print(f"\n📈 Step {step}: val_loss={val_loss:.4f}, val_ppl={val_ppl:.2f}")
+                # Update progress bar with validation info
+                pbar.set_postfix({
+                    'loss': f'{accumulated_loss / config.log_every:.4f}',
+                    'grad': f'{grad_norm.item():.2f}',
+                    'lr': f'{current_lr:.2e}',
+                    'val_loss': f'{val_loss:.4f}',
+                    'val_ppl': f'{val_ppl:.2f}'
+                })
                 
                 # Save best model
                 if val_loss < best_val_loss:
@@ -390,11 +399,11 @@ def main():
                         'val_loss': val_loss,
                         'val_perplexity': val_ppl
                     }, f"{exp_dir}/checkpoints/best_model.pt")
-                    print(f"  ✓ New best model saved!")
+                    pbar.write(f"📈 Step {step}: val_loss={val_loss:.4f}, val_ppl={val_ppl:.2f} ✓ New best model saved!")
                 else:
                     patience_counter += 1
                     if patience_counter >= max_patience:
-                        print(f"\n⚠️ Early stopping triggered after {patience_counter} evaluations without improvement")
+                        pbar.write(f"⚠️ Early stopping triggered after {patience_counter} evaluations without improvement")
                         break
             
             # Save checkpoint
@@ -409,6 +418,10 @@ def main():
                 }, f"{exp_dir}/checkpoints/checkpoint_{step}.pt")
             
             pbar.update(1)
+            
+            # Ensure progress bar is visible
+            if step % 100 == 0:  # Force refresh every 100 steps
+                pbar.refresh()
     
     pbar.close()
     
