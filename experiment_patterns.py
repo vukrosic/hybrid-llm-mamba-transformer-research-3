@@ -284,7 +284,18 @@ def main():
     val_dataset = TextDataset(val_tokens, config.max_seq_len, stride=config.max_seq_len)
     
     print(f" Data: {len(train_tokens):,} train tokens, {len(val_tokens):,} val tokens")
-    print(f"📊 Data: {len(train_dataset)} train sequences, {len(train_dataset)} val sequences")
+    print(f"📊 Data: {len(train_dataset)} train sequences, {len(val_dataset)} val sequences")
+    
+    # Create DataLoaders
+    train_loader = DataLoader(
+        train_dataset, batch_size=config.batch_size,
+        shuffle=True, num_workers=4, pin_memory=True
+    )
+    
+    val_loader = DataLoader(
+        val_dataset, batch_size=config.batch_size,
+        shuffle=False, num_workers=4, pin_memory=True
+    )
     
     # Create model
     model = HybridModel(config).to(device)
