@@ -42,6 +42,20 @@ python inference.py --prompt "The future of AI is"
 ### 4. To upload to Hugging Face automatically, first run
 echo "HF_TOKEN=your_hf_token_with_write_permission" > .env
 
+## 📤 Uploading Models to Hugging Face
+
+After training, you can upload your model to Hugging Face Hub using the included script:
+
+```bash
+# Install required package
+pip install huggingface_hub
+
+# Upload a saved model
+python upload_model.py --model_path experiments/my_experiment/checkpoints/best_model.pt --repo_name username/repo-name
+```
+
+The script automatically creates the proper HF Hub structure and uploads your model using your API token.
+
 ## 📊 Model Configuration
 
 - **Hidden Size**: 384
@@ -68,6 +82,7 @@ python inference.py --model model.pt --prompt "The future of AI is"
 ├── hybrid_llm.py    # Training script and model definition
 ├── inference.py     # Inference and chat interface
 ├── gpu_monitor.py  # GPU monitoring utilities
+├── upload_model.py # Script to upload models to HF Hub
 └── requirements.txt # Python dependencies
 ```
 
