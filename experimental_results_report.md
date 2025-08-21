@@ -115,6 +115,8 @@ The performance improvement from hybrid architectures justifies the modest param
 - **Scheduler**: Linear warmup + cosine decay
 - **Mixed Precision**: Enabled for efficiency
 - **Gradient Clipping**: Applied for stability
+- **Batch Size**: 32 (doubled from 16 for better GPU utilization)
+- **Effective Batch Size**: 32 (32 × 1 gradient accumulation)
 
 ## Conclusion
 

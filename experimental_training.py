@@ -32,7 +32,7 @@ class ExperimentConfig(HybridConfig):
     pattern_name: str = "MMAMAMAM"
     eval_every: int = 200  # More frequent evaluation
     save_every: int = 1000
-    num_eval_batches: int = 100  # More batches for stable eval
+    num_eval_batches: int = 50  # Reduced since effective batch size increased
     
     # Increased data for better training
     num_documents: int = 50000  # Increased from 5000 for longer training runs
@@ -40,13 +40,14 @@ class ExperimentConfig(HybridConfig):
     
     # Better hyperparameters
     dropout: float = 0.1  # Reduced back to 0.1
-    learning_rate: float = 3e-4  # Increased from 1e-4
+    learning_rate: float = 4e-4  # Increased for larger batch size
     weight_decay: float = 0.01  # Add weight decay
-    warmup_steps: int = 500  # Add warmup
+    warmup_steps: int = 1000  # Increased warmup for larger batch size
     
     # Better batch size for stability
-    batch_size: int = 16  # Increased from 8
-    gradient_accumulation_steps: int = 2  # Add gradient accumulation
+    batch_size: int = 32  # Doubled from 16 for better GPU utilization
+    gradient_accumulation_steps: int = 1  # Reduced since batch size increased
+    # Effective batch size = 32 * 1 = 32 (same as before but more efficient)
     
     # HF Hub
     hf_repo: str = "vukrosic/hybrid-llm"
