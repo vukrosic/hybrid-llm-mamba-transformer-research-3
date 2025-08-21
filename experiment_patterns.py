@@ -7,7 +7,7 @@ import os
 from typing import Dict, List
 from dataclasses import dataclass, asdict
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoConfig
 from datasets import load_dataset
 from tqdm import tqdm
 from torch.amp import autocast, GradScaler
@@ -94,6 +94,106 @@ def get_gpu_memory():
     if torch.cuda.is_available():
         return torch.cuda.max_memory_allocated() / 1024**3
     return 0
+
+
+def upload_to_hf_hub(model, tokenizer, config, exp_dir, hf_repo):
+    """Upload model to Hugging Face Hub"""
+    try:
+        hf_token = os.getenv('HF_TOKEN')
+        if not hf_token:
+            print("⚠️  HF_TOKEN not found. Skipping upload.")
+            return False
+        
+        print(f"🚀 Uploading to: {hf_repo}")
+        
+        # Create model config for HF Hub
+        model_config = {
+            "architectures": ["HybridModel"],
+            "model_type": "hybrid_llm",
+            "vocab_size": config.vocab_size,
+            "hidden_size": config.hidden_size,
+            "num_layers": config.num_layers,
+            "num_heads": config.num_heads,
+            "ssm_state_size": config.ssm_state_size,
+            "conv_kernel": config.conv_kernel,
+            "expand_factor": config.expand_factor,
+            "layer_pattern": config.layer_pattern,
+            "max_seq_len": config.max_seq_len,
+            "dropout": config.dropout
+        }
+        
+        # Save model config
+        config_path = os.path.join(exp_dir, "config.json")
+        with open(config_path, 'w') as f:
+            json.dump(model_config, f, indent=2)
+        
+        # Save tokenizer files
+        tokenizer.save_pretrained(exp_dir)
+        
+        # Save model weights
+        model_path = os.path.join(exp_dir, "pytorch_model.bin")
+        torch.save(model.state_dict(), model_path)
+        
+        # Create README for the model
+        readme_content = f"""# Hybrid LLM - {config.pattern_name}
+
+This is a hybrid transformer-Mamba model trained with the layer pattern: `{config.layer_pattern}`
+
+## Model Details
+- **Architecture**: Hybrid Transformer-Mamba
+- **Pattern**: {config.layer_pattern}
+- **Layers**: {config.num_layers}
+- **Hidden Size**: {config.hidden_size}
+- **Parameters**: {sum(p.numel() for p in model.parameters()):,}
+- **Training Steps**: {config.num_steps}
+
+## Usage
+```python
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
+tokenizer = AutoTokenizer.from_pretrained("{hf_repo}")
+model = AutoModelForCausalLM.from_pretrained("{hf_repo}")
+```
+"""
+        
+        readme_path = os.path.join(exp_dir, "README.md")
+        with open(readme_path, 'w') as f:
+            f.write(readme_content)
+        
+        # Upload to HF Hub using git commands (more reliable than transformers push_to_hub)
+        import subprocess
+        import tempfile
+        
+        # Create a temporary directory for git operations
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # ALWAYS use existing repo - never create new ones
+            subprocess.run([
+                "git", "clone", f"https://huggingface.co/{hf_repo}", temp_dir
+            ], check=True, capture_output=True, env={"GIT_ASKPASS": "echo", "GIT_USERNAME": "user", "GIT_PASSWORD": hf_token})
+            
+            # Copy files to temp dir
+            import shutil
+            for file in os.listdir(exp_dir):
+                src = os.path.join(exp_dir, file)
+                dst = os.path.join(temp_dir, file)
+                if os.path.isfile(src):
+                    shutil.copy2(src, dst)
+                elif os.path.isdir(src):
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+            
+            # Commit and push
+            subprocess.run(["git", "add", "."], cwd=temp_dir, check=True)
+            subprocess.run([
+                "git", "commit", "-m", f"Add {config.pattern_name} model - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            ], cwd=temp_dir, check=True)
+            subprocess.run(["git", "push", "origin", "main"], cwd=temp_dir, check=True)
+        
+        print(f"✅ Model successfully uploaded to: https://huggingface.co/{hf_repo}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Failed to upload to HF Hub: {str(e)}")
+        return False
 
 
 def main():
@@ -315,6 +415,10 @@ def main():
     print(f"\n✅ Experiment complete!")
     print(f"📊 Results: val_loss={final_val_loss:.4f}, val_ppl={final_val_ppl:.2f}")
     print(f"💾 Saved to {exp_dir}/")
+    
+    # Upload to Hugging Face Hub
+    print(f"\n🚀 Uploading to Hugging Face Hub...")
+    upload_to_hf_hub(model, tokenizer, config, exp_dir, config.hf_repo)
     
     if args.use_wandb:
         wandb.log(results)
