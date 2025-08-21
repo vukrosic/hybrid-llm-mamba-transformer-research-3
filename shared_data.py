@@ -118,7 +118,7 @@ class SharedDataManager:
             self.train_dataset, 
             batch_size=config.batch_size,
             shuffle=True, 
-            num_workers=4, 
+            num_workers=0,  # ← Set to 0 to debug
             pin_memory=True,
             drop_last=True
         )
@@ -127,7 +127,7 @@ class SharedDataManager:
             self.val_dataset, 
             batch_size=config.batch_size,
             shuffle=False, 
-            num_workers=4, 
+            num_workers=0,  # ← Set to 0 to debug
             pin_memory=True
         )
         
