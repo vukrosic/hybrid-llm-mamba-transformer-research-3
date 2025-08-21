@@ -11,7 +11,7 @@ mkdir -p logs_extended
 
 # Extended settings for longer training
 DEBUG_FLAG="--debug"  # Set to "--debug" for quick testing
-STEPS=300    # Increased from 10k to 30k steps
+STEPS=30000    # Increased from 10k to 30k steps
 USE_WANDB="--use_wandb"   # Set to "" to disable W&B logging
 FORCE_RELOAD=""  # Set to "--force_reload_data" to retokenize data
 
@@ -35,7 +35,7 @@ declare -a EXPERIMENTS=(
     "MMAAMMAAMMAAMMAA:mmaammaa_pattern_12L_extended:MMAAMMAA pattern scaled to 12 layers"
     "MMAAMMAAMMAAMMA:mmaammaa_pattern_14L_extended:MMAAMMAA pattern scaled to 14 layers"
     "MAMAMAMAMAMAMAMA:mama_alternating_10L_extended:MAMA alternating pattern with 10 layers"
-    "MMMMAAAAAA:grouped_separated_10L:Grouped pattern with separated M and A blocks"
+    "MAMMMMMMMMMMMM:nemotron_14L:Nemotron architecture"
     "MMAAAMMMAAA:mixed_grouped_11L:Mixed grouped pattern with varied block sizes"
     "MAMAMAMAMAMAM:mama_alternating_13L_extended:MAMA alternating pattern with 13 layers"
 )
