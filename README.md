@@ -39,6 +39,9 @@ or
 python inference.py --prompt "The future of AI is"
 ```
 
+### 4. To upload to Hugging Face automatically, first run
+echo "HF_TOKEN=your_hf_token_with_write_permission" > .env
+
 ## 📊 Model Configuration
 
 - **Hidden Size**: 384
