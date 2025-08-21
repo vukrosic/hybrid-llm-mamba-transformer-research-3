@@ -35,6 +35,10 @@ class ExperimentConfig(HybridConfig):
     num_documents: int = 2000
     num_steps: int = 5000
     
+    # Better regularization to prevent overfitting
+    dropout: float = 0.2  # Increased from 0.1
+    learning_rate: float = 1e-4  # Reduced from 5e-4
+    
     # HF Hub
     hf_repo: str = "vukrosic/hybrid-llm"
     
@@ -256,34 +260,31 @@ def main():
     dataset = load_dataset("HuggingFaceTB/smollm-corpus", "cosmopedia-v2", 
                           split="train", streaming=True)
     
-    # Tokenize
-    all_tokens = []
+    # Tokenize documents separately (better for train/val split)
+    all_documents = []
     for i, item in enumerate(tqdm(dataset, total=config.num_documents, desc="Tokenizing")):
         if i >= config.num_documents:
             break
         tokens = tokenizer.encode(item["text"][:3000], add_special_tokens=False)
-        all_tokens.extend(tokens)
+        all_documents.append(tokens)
     
-    # Split train/val (90/10)
-    split_idx = int(len(all_tokens) * 0.9)
-    train_tokens = all_tokens[:split_idx]
-    val_tokens = all_tokens[split_idx:]
+    # Split by DOCUMENTS, not tokens (more realistic evaluation)
+    n_train = int(len(all_documents) * 0.9)
+    train_docs = all_documents[:n_train]
+    val_docs = all_documents[n_train:]
+    
+    # Flatten
+    train_tokens = [token for doc in train_docs for token in doc]
+    val_tokens = [token for doc in val_docs for token in doc]
     
     config.vocab_size = tokenizer.vocab_size
     
-    # Create datasets
-    train_dataset = TextDataset(train_tokens, config.max_seq_len)
-    val_dataset = TextDataset(val_tokens, config.max_seq_len)
+    # Create datasets with overlapping sequences (stride = max_len // 2)
+    train_dataset = TextDataset(train_tokens, config.max_seq_len, stride=config.max_seq_len // 2)
+    val_dataset = TextDataset(val_tokens, config.max_seq_len, stride=config.max_seq_len)
     
-    train_loader = DataLoader(
-        train_dataset, batch_size=config.batch_size,
-        shuffle=True, num_workers=4, pin_memory=True
-    )
-    
-    val_loader = DataLoader(
-        val_dataset, batch_size=config.batch_size,
-        shuffle=False, num_workers=4, pin_memory=True
-    )
+    print(f" Data: {len(train_tokens):,} train tokens, {len(val_tokens):,} val tokens")
+    print(f"📊 Data: {len(train_dataset)} train sequences, {len(train_dataset)} val sequences")
     
     # Create model
     model = HybridModel(config).to(device)

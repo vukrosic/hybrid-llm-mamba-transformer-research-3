@@ -138,16 +138,23 @@ class HybridModel(nn.Module):
 
 
 class TextDataset(Dataset):
-    def __init__(self, tokens, max_length):
+    def __init__(self, tokens, max_length, stride=None):
         self.tokens = tokens
         self.max_length = max_length
+        # Use stride for overlapping sequences (better for LM training)
+        self.stride = stride if stride is not None else max_length
         
     def __len__(self):
-        return len(self.tokens) // self.max_length
+        return max(1, (len(self.tokens) - self.max_length) // self.stride + 1)
     
     def __getitem__(self, idx):
-        start = idx * self.max_length
-        return torch.tensor(self.tokens[start:start + self.max_length], dtype=torch.long)
+        start = idx * self.stride
+        end = min(start + self.max_length, len(self.tokens))
+        # Pad if necessary
+        chunk = self.tokens[start:end]
+        if len(chunk) < self.max_length:
+            chunk = chunk + [0] * (self.max_length - len(chunk))  # pad with 0
+        return torch.tensor(chunk, dtype=torch.long)
 
 
 def main():
@@ -167,15 +174,31 @@ def main():
     
     dataset = load_dataset("HuggingFaceTB/smollm-corpus", "cosmopedia-v2", split="train", streaming=True)
     
-    # Tokenize in one go for efficiency
-    all_tokens = []
+    # Tokenize documents separately (better for train/val split)
+    all_documents = []
     for i, item in enumerate(tqdm(dataset, total=config.num_documents, desc="Tokenizing")):
         if i >= config.num_documents:
             break
         tokens = tokenizer.encode(item["text"][:3000], add_special_tokens=False)
-        all_tokens.extend(tokens)
+        all_documents.append(tokens)
+    
+    # Split by DOCUMENTS, not tokens (more realistic evaluation)
+    n_train = int(len(all_documents) * 0.9)
+    train_docs = all_documents[:n_train]
+    val_docs = all_documents[n_train:]
+    
+    # Flatten
+    train_tokens = [token for doc in train_docs for token in doc]
+    val_tokens = [token for doc in val_docs for token in doc]
     
     config.vocab_size = tokenizer.vocab_size
+    
+    # Create datasets with overlapping sequences (stride = max_len // 2)
+    train_dataset = TextDataset(train_tokens, config.max_seq_len, stride=config.max_seq_len // 2)
+    val_dataset = TextDataset(val_tokens, config.max_seq_len, stride=config.max_seq_len)
+    
+    print(f" Data: {len(train_tokens):,} train tokens, {len(val_tokens):,} val tokens")
+    print(f"📊 Data: {len(train_dataset)} train sequences, {len(val_dataset)} val sequences")
     
     # Create dataset
     train_dataset = TextDataset(all_tokens, config.max_seq_len)
