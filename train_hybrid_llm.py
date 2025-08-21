@@ -12,7 +12,7 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer
 from datasets import load_dataset
 from tqdm import tqdm
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 
 @dataclass
 class HybridConfig:
@@ -201,7 +201,7 @@ def main():
     
     # Optimizer and AMP
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, fused=True)  # Fused optimizer
-    scaler = GradScaler()
+    scaler = GradScaler('cuda')
     
     # Training loop
     model.train()
@@ -216,7 +216,7 @@ def main():
             batch = batch.to(device, non_blocking=True)  # Async transfer
             
             # Mixed precision training
-            with autocast():
+            with autocast('cuda'):
                 _, loss = model(batch, labels=batch)
             
             # Backward
@@ -243,7 +243,7 @@ def main():
     model.eval()
     with torch.no_grad():
         prompt = tokenizer.encode("The future of AI is", return_tensors="pt").to(device)
-        with autocast():
+        with autocast('cuda'):
             for _ in range(30):
                 logits, _ = model(prompt)
                 next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
