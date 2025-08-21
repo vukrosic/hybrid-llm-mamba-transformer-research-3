@@ -29,7 +29,7 @@ run_experiment() {
     echo "   Description: $description"
     echo "   Starting at: $(date '+%Y-%m-%d %H:%M:%S')"
     
-    python experiment_patterns.py \
+    python experimental_training.py \
         --pattern "$pattern" \
         --name "$name" \
         --steps $STEPS \
