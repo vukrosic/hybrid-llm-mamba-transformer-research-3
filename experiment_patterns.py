@@ -10,7 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer
 from datasets import load_dataset
 from tqdm import tqdm
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 import argparse
 from datetime import datetime
 import wandb
@@ -77,7 +77,7 @@ def evaluate_model(model, eval_loader, config, device, num_batches=50):
             if i >= num_batches:
                 break
             batch = batch.to(device)
-            with autocast():
+            with autocast('cuda'):
                 _, loss = model(batch, labels=batch)
             batch_size = batch.numel()
             total_loss += loss.item() * batch_size
@@ -191,7 +191,7 @@ def main():
     # Training setup
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, fused=True)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config.num_steps)
-    scaler = GradScaler()
+    scaler = GradScaler('cuda')
     
     # Metrics
     metrics = MetricsTracker()
@@ -219,7 +219,7 @@ def main():
         t1 = torch.cuda.Event(enable_timing=True)
         t0.record()
         
-        with autocast():
+        with autocast('cuda'):
             _, loss = model(batch, labels=batch)
         
         # Backward
