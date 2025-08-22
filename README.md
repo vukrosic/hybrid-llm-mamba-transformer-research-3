@@ -1,3 +1,5 @@
+THIS REPO IS NOT USED IN ANY VIDEO OR FINISHED
+
 # 🚀 Hybrid Mamba-Transformer LLM Research
 
 I recommend you use AI coding IDE:
