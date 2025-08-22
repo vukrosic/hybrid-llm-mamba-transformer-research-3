@@ -15,6 +15,8 @@ from typing import List, Optional
 import warnings
 import os
 import pickle
+from shared_data import shared_data_manager
+from train_hybrid_llm import HybridConfig
 warnings.filterwarnings('ignore')
 
 def set_seed(seed: int = 42):
@@ -29,22 +31,22 @@ def set_seed(seed: int = 42):
 
 @dataclass
 class ModelConfig:
-    # Model architecture
-    d_model: int = 384
-    n_heads: int = 8
-    n_layers: int = 6
-    d_ff: int = 1536
-    batch_size: int = 24
-    max_steps: int = 5000
+    # Model architecture - Match hybrid model size
+    d_model: int = 768  # Match hybrid hidden_size
+    n_heads: int = 12   # Match hybrid num_heads
+    n_layers: int = 8   # Match hybrid num_layers
+    d_ff: int = 3072    # 4x d_model (2x hybrid expand_factor=2 * hidden_size)
+    batch_size: int = 32  # Match hybrid batch_size
+    max_steps: int = 10000  # Match hybrid num_steps
 
     # Training parameters
-    gradient_accumulation_steps: int = 4
-    muon_lr: float = 0.01
+    gradient_accumulation_steps: int = 1  # Adjust for comparison
+    muon_lr: float = 5e-4  # Match hybrid learning_rate
 
-    # Data parameters
+    # Data parameters - Match hybrid data
     max_seq_len: int = 512
-    num_documents: int = 2000
-    max_tokens: int = 500000
+    num_documents: int = 50000  # Match hybrid num_documents
+    max_tokens: int = None  # Will use all tokens from documents
 
     # Evaluation
     eval_every: int = 500
@@ -110,61 +112,19 @@ class Muon(torch.optim.Optimizer):
                 g = zeropower_via_newtonschulz5(g, steps=group["ns_steps"])
                 p.add_(g.view_as(p), alpha=-group["lr"] * max(1, p.size(-2) / p.size(-1))**0.5)
 	
-def load_and_cache_data(config: ModelConfig, cache_dir: str = "data_cache"):
-    """Load and cache tokenized data to avoid reprocessing"""
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_file = f"{cache_dir}/tokenized_data_{config.num_documents}_{config.max_tokens}.pkl"
-
-    # Check if cached data exists
-    if os.path.exists(cache_file):
-        print(f"📦 Loading cached data from {cache_file}")
-        with open(cache_file, 'rb') as f:
-            cached_data = pickle.load(f)
-
-        texts = cached_data['texts']
-        tokenizer = cached_data['tokenizer']
-        tokens = cached_data['tokens']
-        config.vocab_size = tokenizer.vocab_size
-
-        print(f"✅ Loaded {len(texts)} documents, {len(tokens):,} tokens from cache")
-        return texts, tokenizer, tokens
-
-    print(f"🔄 Processing new data (will cache for future use)")
-
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM-135M", token=False)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    # Load dataset
-    dataset = load_dataset("HuggingFaceTB/smollm-corpus", "cosmopedia-v2", split="train", streaming=True, token=False)
-
-    texts = []
-    for i, item in enumerate(dataset):
-        if i >= config.num_documents:
-            break
-        texts.append(item["text"][:3000])
-
-    print(f"Loaded {len(texts)} documents")
-
-    # Tokenize
-    print("Tokenizing texts...")
-    all_tokens = []
-    for text in tqdm(texts, desc="Tokenizing"):
-        tokens = tokenizer.encode(text, add_special_tokens=False)
-        all_tokens.extend(tokens)
-
-    tokens = all_tokens[:config.max_tokens]
-    print(f"Using {len(tokens):,} tokens")
-    config.vocab_size = tokenizer.vocab_size
-
-    # Cache the processed data
-    cached_data = {'texts': texts, 'tokenizer': tokenizer, 'tokens': tokens}
-    with open(cache_file, 'wb') as f:
-        pickle.dump(cached_data, f)
-
-    print(f"💾 Cached data to {cache_file}")
-    return texts, tokenizer, tokens
+def convert_to_hybrid_config(config: ModelConfig) -> HybridConfig:
+    """Convert ModelConfig to HybridConfig for shared data manager"""
+    return HybridConfig(
+        hidden_size=config.d_model,
+        num_layers=config.n_layers,
+        num_heads=config.n_heads,
+        max_seq_len=config.max_seq_len,
+        batch_size=config.batch_size,
+        num_documents=config.num_documents,
+        num_steps=config.max_steps,
+        dropout=config.dropout,
+        grad_clip=config.grad_clip
+    )
 
 class TextTokenDataset(Dataset):
     def __init__(self, tokens: List[int], seq_len: int = 512):
@@ -303,14 +263,22 @@ def evaluate_model(model: nn.Module, val_loader: DataLoader, config: ModelConfig
     device = next(model.parameters()).device
 
     with torch.no_grad():
-        for i, (x, y) in enumerate(val_loader):
+        for i, batch in enumerate(val_loader):
             if i >= config.eval_steps:
                 break
-            x, y = x.to(device), y.to(device)
+            
+            # Handle shared data manager format (single tensor)
+            if isinstance(batch, tuple):
+                x, y = batch
+            else:
+                # batch is the input tokens, labels are shifted version
+                x = batch.to(device)
+                y = x[:, 1:].clone()  # Shift for next token prediction
+                x = x[:, :-1]  # Remove last token from input
 
             with autocast(enabled=config.use_amp):
                 logits = model(x)
-                loss = F.cross_entropy(logits.view(-1, config.vocab_size), y.view(-1))
+                loss = F.cross_entropy(logits.view(-1, config.vocab_size), y.contiguous().view(-1))
 
             total_loss += loss.item() * y.numel()
             total_tokens += y.numel()
@@ -360,7 +328,7 @@ def train_model(config: ModelConfig, train_loader: DataLoader, val_loader: DataL
     total_params = sum(p.numel() for p in model.parameters())
     print(f"  📊 Total parameters: {total_params:,}")
 
-    # Setup optimizers
+    # Setup optimizers (keep original Muon)
     optimizers = setup_muon_optimizer(model, config)
 
     # Learning rate schedule
@@ -388,11 +356,19 @@ def train_model(config: ModelConfig, train_loader: DataLoader, val_loader: DataL
     pbar = tqdm(total=config.max_steps, desc="Training")
 
     while step < config.max_steps:
-        for batch_idx, (x, y) in enumerate(train_loader):
+        for batch_idx, batch in enumerate(train_loader):
             if step >= config.max_steps:
                 break
 
-            x, y = x.to(device), y.to(device)
+            # Handle shared data manager format (single tensor)
+            if isinstance(batch, tuple):
+                x, y = batch
+                x, y = x.to(device), y.to(device)
+            else:
+                # batch is the input tokens, labels are shifted version
+                x = batch.to(device)
+                y = x[:, 1:].clone()  # Shift for next token prediction
+                x = x[:, :-1]  # Remove last token from input
 
             # Forward pass with gradient accumulation
             if config.use_amp:
@@ -484,23 +460,21 @@ if __name__ == "__main__":
     print(f"\n📋 Model Configuration:")
     print(f"   Architecture: {config.d_model}d, {config.n_layers}L, {config.n_heads}H, {config.d_ff}ff")
     print(f"   Training: {config.max_steps} steps, batch size {config.batch_size}")
-    print(f"   Data: {config.max_tokens:,} tokens, seq_len {config.max_seq_len}")
+    print(f"   Data: {config.num_documents:,} documents, seq_len {config.max_seq_len}")
 
-    # Load data
-    texts, tokenizer, tokens = load_and_cache_data(config)
-    dataset = TextTokenDataset(tokens, config.max_seq_len)
-
-    # Train/val split
-    val_size = len(dataset) // 10
-    train_size = len(dataset) - val_size
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        dataset, [train_size, val_size], generator=torch.Generator().manual_seed(42)
-    )
-
-    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=2)
-
-    print(f"📊 Dataset: {len(train_dataset)} train, {len(val_dataset)} val samples")
+    # Convert config and load data using shared data manager
+    hybrid_config = convert_to_hybrid_config(config)
+    
+    # Load data using shared data manager (same as hybrid model)
+    print("Loading data using shared data manager...")
+    train_loader, val_loader = shared_data_manager.load_or_create_datasets(hybrid_config)
+    
+    # Get tokenizer and set vocab size
+    tokenizer = shared_data_manager.get_tokenizer()
+    config.vocab_size = tokenizer.vocab_size
+    
+    print(f"📊 Dataset loaded: {len(train_loader)} train batches, {len(val_loader)} val batches")
+    print(f"📊 Vocab size: {config.vocab_size:,}")
 
     # Train model
     start_time = time.time()
