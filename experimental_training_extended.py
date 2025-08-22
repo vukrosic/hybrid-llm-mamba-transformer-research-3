@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
+import pandas as pd
 
 # Load environment variables from .env file
 load_dotenv()
@@ -452,7 +453,8 @@ def main():
                     'step': f'{step}/{config.num_steps}'
                 }, refresh=True)
                 
-                if args.use_wandb:
+                # Only log to wandb on main process (rank 0)
+                if args.use_wandb and rank == 0:
                     wandb.log(metrics.get_current_metrics(), step=step)
                 
                 accumulated_loss = 0
@@ -472,26 +474,27 @@ def main():
                     'best': f'{best_val_loss:.4f}'
                 })
                 
-                # Save best model
+                # Save best model (only on main process)
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     patience_counter = 0
-                    torch.save({
-                        'model_state_dict': model.state_dict(),
-                        'config': asdict(config),
-                        'step': step,
-                        'val_loss': val_loss,
-                        'val_perplexity': val_ppl
-                    }, f"{exp_dir}/checkpoints/best_model.pt")
-                    pbar.write(f"📈 Step {step}: val_loss={val_loss:.4f}, val_ppl={val_ppl:.2f} ✓ New best!")
+                    if rank == 0:  # Only save on main process
+                        torch.save({
+                            'model_state_dict': model.state_dict(),
+                            'config': asdict(config),
+                            'step': step,
+                            'val_loss': val_loss,
+                            'val_perplexity': val_ppl
+                        }, f"{exp_dir}/checkpoints/best_model.pt")
+                        pbar.write(f"📈 Step {step}: val_loss={val_loss:.4f}, val_ppl={val_ppl:.2f} ✓ New best!")
                 else:
                     patience_counter += 1
                     if patience_counter >= max_patience:
                         pbar.write(f"⚠️ Early stopping after {patience_counter} evals without improvement")
                         break
             
-            # Save checkpoint
-            if step % config.save_every == 0:
+            # Save checkpoint (only on main process)
+            if step % config.save_every == 0 and rank == 0:
                 torch.save({
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
@@ -510,45 +513,48 @@ def main():
     pbar.close()
     
     # Final evaluation with more batches
-    print("\n🔬 Final extended evaluation...")
+    if rank == 0:
+        print("\n🔬 Final extended evaluation...")
+    
     final_val_loss, final_val_ppl = evaluate_model(model, val_loader, config, device, len(val_loader))
     
-    # Save final results
-    results = {
-        'pattern': config.layer_pattern,
-        'pattern_name': config.pattern_name,
-        'num_params': total_params,
-        'final_val_loss': final_val_loss,
-        'final_val_perplexity': final_val_ppl,
-        'best_val_loss': best_val_loss,
-        'total_steps': step,
-        'early_stopped': patience_counter >= max_patience,
-        'training_type': 'extended_30k'
-    }
-    
-    with open(f"{exp_dir}/results.json", 'w') as f:
-        json.dump(results, f, indent=2)
-    
-    metrics.save(f"{exp_dir}/metrics.json")
-    
-    print(f"\n✅ Extended experiment complete!")
-    print(f"📊 Results: val_loss={final_val_loss:.4f}, val_ppl={final_val_ppl:.2f}")
-    print(f"🔧 Best val_loss={best_val_loss:.4f}")
-    print(f"💾 Saved to {exp_dir}/")
-    
-    if args.use_wandb:
-        # Log final results
-        wandb.log({
+    # Save final results (only on main process)
+    if rank == 0:
+        results = {
+            'pattern': config.layer_pattern,
+            'pattern_name': config.pattern_name,
+            'num_params': total_params,
             'final_val_loss': final_val_loss,
             'final_val_perplexity': final_val_ppl,
             'best_val_loss': best_val_loss,
-            'num_params': total_params,
-            'total_steps': step
-        })
-        wandb.finish()
+            'total_steps': step,
+            'early_stopped': patience_counter >= max_patience,
+            'config': asdict(config)
+        }
+        
+        # Save results
+        with open(f"{exp_dir}/final_results.json", 'w') as f:
+            json.dump(results, f, indent=2)
+        
+        # Save to CSV for analysis
+        results_df = pd.DataFrame([results])
+        results_df.to_csv(f"{exp_dir}/final_results.csv", index=False)
+        
+        print(f"✅ Training completed!")
+        print(f"📊 Final validation loss: {final_val_loss:.4f}")
+        print(f"📊 Final validation perplexity: {final_val_ppl:.2f}")
+        print(f"💾 Results saved to: {exp_dir}")
+        
+        # Log final results to wandb
+        if args.use_wandb:
+            wandb.log({
+                'final_val_loss': final_val_loss,
+                'final_val_perplexity': final_val_ppl,
+                'best_val_loss': best_val_loss,
+                'total_steps': step
+            })
+            wandb.finish()
     
-    # Cleanup
-    cleanup_distributed()
     return results
 
 
