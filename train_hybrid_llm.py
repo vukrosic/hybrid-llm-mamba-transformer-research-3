@@ -40,7 +40,9 @@ class HybridConfig:
         self.intermediate_size = self.expand_factor * self.hidden_size
 
 
-class SimpleSSM(nn.Module):
+
+class ImprovedSSM(nn.Module):
+    """Improved SSM with better numerical stability"""
     def __init__(self, config: HybridConfig):
         super().__init__()
         self.intermediate_size = config.intermediate_size
@@ -53,9 +55,14 @@ class SimpleSSM(nn.Module):
             padding=config.conv_kernel - 1, bias=False
         )
         self.x_proj = nn.Linear(self.intermediate_size, config.ssm_state_size * 2 + 1, bias=False)
-        self.A = nn.Parameter(torch.randn(self.intermediate_size, self.ssm_state_size))
+        
+        # Better initialization for A
+        self.A = nn.Parameter(torch.randn(self.intermediate_size, self.ssm_state_size) * 0.1)
         self.D = nn.Parameter(torch.ones(self.intermediate_size))
         self.out_proj = nn.Linear(self.intermediate_size, config.hidden_size, bias=False)
+        
+        # Add layer norm for stability
+        self.norm = nn.LayerNorm(self.intermediate_size)
         
     def forward(self, x):
         batch_size, seq_len, _ = x.shape
@@ -66,18 +73,29 @@ class SimpleSSM(nn.Module):
         x = self.conv1d(x.transpose(1, 2))[:, :, :seq_len].transpose(1, 2)
         x = F.silu(x)
         
+        # Add normalization for stability
+        x = self.norm(x)
+        
         x_proj = self.x_proj(x)
         delta, B, C = x_proj.split([1, self.ssm_state_size, self.ssm_state_size], dim=-1)
-        delta = F.softplus(delta)
         
-        # Simplified parallel SSM
-        A = -torch.exp(self.A)
+        # Improved stability with clamping
+        delta = F.softplus(delta).clamp(min=1e-6, max=10)
+        
+        # More stable A computation
+        A = -F.softplus(self.A).clamp(min=0.1, max=10)
+        
+        # Compute SSM with better numerical stability
         decay = torch.exp(delta.unsqueeze(-1) * A.unsqueeze(0).unsqueeze(0))
+        decay = decay.clamp(min=1e-6, max=1.0)  # Prevent numerical issues
+        
         states = x.unsqueeze(-1) * B.unsqueeze(2) * decay
         y = (states * C.unsqueeze(2)).sum(dim=-1)
         y = y + x * self.D.unsqueeze(0).unsqueeze(0)
         
         return self.out_proj(y * F.silu(z))
+
+
 
 
 class SimpleAttention(nn.Module):
@@ -104,7 +122,7 @@ class HybridBlock(nn.Module):
     def __init__(self, config: HybridConfig, layer_idx: int):
         super().__init__()
         self.norm = nn.LayerNorm(config.hidden_size)
-        self.mixer = SimpleSSM(config) if config.layer_pattern[layer_idx] == 'M' else SimpleAttention(config)
+        self.mixer = ImprovedSSM(config) if config.layer_pattern[layer_idx] == 'M' else SimpleAttention(config)
         self.dropout = nn.Dropout(config.dropout)
         
     def forward(self, x):

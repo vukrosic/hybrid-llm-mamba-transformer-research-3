@@ -24,7 +24,7 @@ import pandas as pd
 load_dotenv()
 
 # Import your existing classes
-from train_hybrid_llm import HybridConfig, SimpleSSM, SimpleAttention, HybridBlock, HybridModel
+from train_hybrid_llm import HybridConfig, ImprovedSSM, SimpleAttention, HybridBlock, HybridModel
 from shared_data import shared_data_manager
 
 
@@ -62,61 +62,6 @@ class ExtendedExperimentConfig(HybridConfig):
     
     def get_run_name(self):
         return f"{self.pattern_name}_{self.num_layers}L_extended_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-
-class ImprovedSSM(nn.Module):
-    """Improved SSM with better numerical stability"""
-    def __init__(self, config: HybridConfig):
-        super().__init__()
-        self.intermediate_size = config.intermediate_size
-        self.ssm_state_size = config.ssm_state_size
-        
-        self.in_proj = nn.Linear(config.hidden_size, self.intermediate_size * 2, bias=False)
-        self.conv1d = nn.Conv1d(
-            self.intermediate_size, self.intermediate_size,
-            kernel_size=config.conv_kernel, groups=self.intermediate_size,
-            padding=config.conv_kernel - 1, bias=False
-        )
-        self.x_proj = nn.Linear(self.intermediate_size, config.ssm_state_size * 2 + 1, bias=False)
-        
-        # Better initialization for A
-        self.A = nn.Parameter(torch.randn(self.intermediate_size, self.ssm_state_size) * 0.1)
-        self.D = nn.Parameter(torch.ones(self.intermediate_size))
-        self.out_proj = nn.Linear(self.intermediate_size, config.hidden_size, bias=False)
-        
-        # Add layer norm for stability
-        self.norm = nn.LayerNorm(self.intermediate_size)
-        
-    def forward(self, x):
-        batch_size, seq_len, _ = x.shape
-        
-        xz = self.in_proj(x)
-        x, z = xz.chunk(2, dim=-1)
-        
-        x = self.conv1d(x.transpose(1, 2))[:, :, :seq_len].transpose(1, 2)
-        x = F.silu(x)
-        
-        # Add normalization for stability
-        x = self.norm(x)
-        
-        x_proj = self.x_proj(x)
-        delta, B, C = x_proj.split([1, self.ssm_state_size, self.ssm_state_size], dim=-1)
-        
-        # Improved stability with clamping
-        delta = F.softplus(delta).clamp(min=1e-6, max=10)
-        
-        # More stable A computation
-        A = -F.softplus(self.A).clamp(min=0.1, max=10)
-        
-        # Compute SSM with better numerical stability
-        decay = torch.exp(delta.unsqueeze(-1) * A.unsqueeze(0).unsqueeze(0))
-        decay = decay.clamp(min=1e-6, max=1.0)  # Prevent numerical issues
-        
-        states = x.unsqueeze(-1) * B.unsqueeze(2) * decay
-        y = (states * C.unsqueeze(2)).sum(dim=-1)
-        y = y + x * self.D.unsqueeze(0).unsqueeze(0)
-        
-        return self.out_proj(y * F.silu(z))
 
 
 class MetricsTracker:
@@ -348,13 +293,10 @@ def main():
     config.pad_token_id = tokenizer.pad_token_id
     config.vocab_size = tokenizer.vocab_size
     
-    # Create model with improved SSM if needed
+    # Create model (ImprovedSSM is now used by default in HybridModel)
     model = HybridModel(config).to(device)
     
-    # Replace SSM layers with improved version AND ensure they're on the correct device
-    for i, layer in enumerate(model.layers):
-        if config.layer_pattern[i] == 'M':
-            layer.mixer = ImprovedSSM(config).to(device)  # Explicitly move to device
+    # No need to manually replace SSM layers since ImprovedSSM is now the default
     
     # Double-check all parameters are on the correct device
     model = model.to(device)
