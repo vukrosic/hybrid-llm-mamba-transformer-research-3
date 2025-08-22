@@ -132,7 +132,20 @@ class InteractiveInference:
         # Extract config
         if 'config' in checkpoint:
             config_dict = checkpoint['config']
-            config = HybridConfig(**config_dict)
+            
+            # Filter out extended config fields that aren't in base HybridConfig
+            base_config_fields = {
+                'vocab_size', 'hidden_size', 'num_layers', 'num_heads', 
+                'ssm_state_size', 'conv_kernel', 'expand_factor', 'layer_pattern',
+                'max_seq_len', 'batch_size', 'num_documents', 'learning_rate', 
+                'num_steps', 'dropout', 'grad_clip', 'log_every', 'pad_token_id'
+            }
+            
+            # Create filtered config dict with only base fields
+            filtered_config = {k: v for k, v in config_dict.items() if k in base_config_fields}
+            
+            print(f"✅ Loading config with pattern: {filtered_config.get('layer_pattern', 'UNKNOWN')}")
+            config = HybridConfig(**filtered_config)
         else:
             # Fallback to default config if not in checkpoint
             config = HybridConfig()
