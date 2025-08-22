@@ -78,7 +78,6 @@ def get_checkpoint_info(checkpoint_path):
 
 if __name__ == "__main__":
     find_checkpoints()
-```
 
 import torch
 import torch.nn.functional as F
@@ -107,13 +106,14 @@ class InteractiveInference:
         self.temperature = 1.0
         self.top_p = 0.9
         self.top_k = 50
+        self.max_new_tokens = 100
         
     def _setup_device(self, device: str) -> torch.device:
         """Setup the device for inference"""
         if device == "auto":
             if torch.cuda.is_available():
                 device = "cuda"
-                print(f" Using CUDA: {torch.cuda.get_device_name()}")
+                print(f"🎯 Using CUDA: {torch.cuda.get_device_name()}")
             else:
                 device = "cpu"
                 print("💻 Using CPU")
@@ -124,7 +124,7 @@ class InteractiveInference:
     
     def _load_model(self, checkpoint_path: str):
         """Load the trained model from checkpoint"""
-        print(f" Loading model from: {checkpoint_path}")
+        print(f"🎯 Loading model from: {checkpoint_path}")
         
         # Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
@@ -325,7 +325,7 @@ class InteractiveInference:
             return False
         
         elif cmd == '/help':
-            print(" Available commands:")
+            print("💡 Available commands:")
             print("   /temp <value> - Set temperature (0.1-2.0)")
             print("   /top_p <value> - Set top-p (0.1-1.0)")
             print("   /top_k <value> - Set top-k (1-100)")
@@ -371,7 +371,7 @@ class InteractiveInference:
                 value = int(parts[1])
                 if 1 <= value <= 1000:
                     self.max_new_tokens = value
-                    print(f" Max new tokens set to: {value}")
+                    print(f"🎯 Max new tokens set to: {value}")
                 else:
                     print("❌ Max new tokens must be between 1 and 1000")
             except ValueError:
@@ -445,7 +445,7 @@ def main():
                 top_p=args.top_p,
                 top_k=args.top_k
             )
-            print(f"\n Generated text:\n{result}")
+            print(f"\n🎯 Generated text:\n{result}")
         
         # Interactive mode
         else:
