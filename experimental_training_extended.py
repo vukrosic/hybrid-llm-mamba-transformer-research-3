@@ -239,7 +239,7 @@ def cleanup_distributed():
 
 def main():
     parser = argparse.ArgumentParser(description='Extended Hybrid LLM Training with Data Parallelism')
-    parser.add_argument('--pattern', type=str, default='AMAMAMAMAMAMAM', help='Layer pattern')
+    parser.add_argument('--pattern', type=str, default='AMAMAMAMAMAMAMAM', help='Layer pattern')
     parser.add_argument('--name', type=str, default='amama_16L_extended', help='Experiment name')
     parser.add_argument('--steps', type=int, default=30000, help='Number of training steps')
     parser.add_argument('--debug', action='store_true', help='Debug mode')
@@ -251,6 +251,13 @@ def main():
     # Setup distributed training
     rank, world_size, local_rank = setup_distributed()
     
+    # Create config FIRST (before any references)
+    config = ExtendedExperimentConfig(
+        layer_pattern=args.pattern,
+        pattern_name=args.name,
+        num_steps=args.steps
+    )
+    
     # Only main process should create experiment directory and log
     if rank == 0:
         print(f"🚀 Starting Data Parallel Training on {world_size} GPUs")
@@ -259,26 +266,12 @@ def main():
         print(f"📚 Documents: {config.num_documents} (3x increase)")
         print(f"🚀 Data Parallel: {world_size} GPUs, {config.batch_size} batch per GPU")
         
-        # Adjust steps for data parallelism
-        original_steps = args.steps
-        adjusted_steps = args.steps // world_size  # Reduce steps proportionally
-        print(f"📊 Adjusted steps: {original_steps} → {adjusted_steps} (accounting for {world_size}x data parallelism)")
-        
-        # Update config for this run
-        config.num_steps = adjusted_steps
-        
         # Create experiment directory
         exp_dir = f"experiments_extended/{args.name}"
         os.makedirs(exp_dir, exist_ok=True)
         os.makedirs(f"{exp_dir}/checkpoints", exist_ok=True)
         
         # Save config
-        config = ExtendedExperimentConfig(
-            layer_pattern=args.pattern,
-            pattern_name=args.name,
-            num_steps=args.steps
-        )
-        
         with open(f"{exp_dir}/config.json", 'w') as f:
             json.dump(asdict(config), f, indent=2)
     
@@ -286,18 +279,15 @@ def main():
     if dist.is_initialized():
         dist.barrier()
     
-    # Load config on all processes
+    # Load config on all processes (if not already created)
     if rank != 0:
         exp_dir = f"experiments_extended/{args.name}"
-        with open(f"{exp_dir}/config.json", 'r') as f:
-            config_dict = json.load(f)
-        config = ExtendedExperimentConfig(**config_dict)
-    else:
-        config = ExtendedExperimentConfig(
-            layer_pattern=args.pattern,
-            pattern_name=args.name,
-            num_steps=args.steps
-        )
+        if os.path.exists(f"{exp_dir}/config.json"):
+            with open(f"{exp_dir}/config.json", 'r') as f:
+                config_dict = json.load(f)
+            config = ExtendedExperimentConfig(**config_dict)
+        # If config file doesn't exist yet, use the one we already created
+        # (this handles the case where rank 0 hasn't finished creating the file yet)
     
     # Initialize wandb only on main process
     if args.use_wandb and rank == 0:
@@ -305,7 +295,7 @@ def main():
             project="hybrid-patterns-extended",
             name=config.get_run_name(),
             config=asdict(config),
-            tags=["extended", "30k-steps", "16L", "data-parallel", "2x4090"]
+            tags=["extended", "30k-steps", "16L", "data-parallel", f"{world_size}x4090"]
         )
     
     # Setup
@@ -319,18 +309,28 @@ def main():
         print(f"⏱️ Steps: {config.num_steps} (30k extended)")
         print(f"📚 Documents: {config.num_documents} (3x increase)")
         print(f"🚀 Data Parallel: {world_size} GPUs, {config.batch_size} batch per GPU")
+        
+        # Debug info for data distribution
+        print(f"🔍 Debug: Expected speedup: {world_size}x")
+        print(f"🔍 Debug: Effective batch size: {config.batch_size * world_size * config.gradient_accumulation_steps}")
     
     # Load data using shared data manager with distributed info
     if rank == 0:
         print("Loading extended dataset...")
-
+    
     train_loader, val_loader = shared_data_manager.load_or_create_datasets(
         config, 
         force_reload=args.force_reload_data,
         rank=rank if dist.is_initialized() else None,
         world_size=world_size if dist.is_initialized() else None
     )
-
+    
+    # Debug info for data distribution
+    if rank == 0:
+        print(f"🔍 Debug: Train loader has {len(train_loader)} batches")
+        print(f"🔍 Debug: Batch size per GPU: {config.batch_size}")
+        print(f"🔍 Debug: Total effective batch size: {config.batch_size * world_size * config.gradient_accumulation_steps}")
+    
     # Remove the manual DistributedSampler wrapping since it's now handled in shared_data.py
     # train_sampler = DistributedSampler(train_loader.dataset, shuffle=True)
     # val_sampler = DistributedSampler(val_loader.dataset, shuffle=False)
