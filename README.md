@@ -1,4 +1,4 @@
-THIS REPO IS NOT USED IN ANY VIDEO OR FINISHED
+THIS REPO IS NOT USED IN ANY VIDEO OR FINISHED, just some random experiments I did, readme is not 100% accurate, you can use coding AI IDE and let it help you with this repo
 
 # 🚀 Hybrid Mamba-Transformer LLM Research
 
