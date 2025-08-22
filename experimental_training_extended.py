@@ -258,13 +258,20 @@ def main():
         num_steps=args.steps
     )
     
+    # CRITICAL: Adjust steps for data parallelism
+    original_steps = args.steps
+    adjusted_steps = args.steps // world_size  # Reduce steps by number of GPUs
+    config.num_steps = adjusted_steps
+    
     # Only main process should create experiment directory and log
     if rank == 0:
         print(f"🚀 Starting Data Parallel Training on {world_size} GPUs")
         print(f"🔬 Pattern: {args.pattern} ({len(args.pattern)} layers)")
-        print(f"⏱️ Steps: {args.steps} (30k extended)")
+        print(f"⏱️ Original Steps: {original_steps}")
+        print(f"⏱️ Adjusted Steps: {adjusted_steps} (÷{world_size} for {world_size}x data parallelism)")
         print(f"📚 Documents: {config.num_documents} (3x increase)")
         print(f"🚀 Data Parallel: {world_size} GPUs, {config.batch_size} batch per GPU")
+        print(f"📦 Effective Batch Size: {config.batch_size * world_size * config.gradient_accumulation_steps}")
         
         # Create experiment directory
         exp_dir = f"experiments_extended/{args.name}"
