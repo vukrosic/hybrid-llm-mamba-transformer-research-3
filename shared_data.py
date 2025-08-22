@@ -6,6 +6,7 @@ from tqdm import tqdm
 import os
 import pickle
 from pathlib import Path
+from torch.utils.data import DistributedSampler
 
 class TextDataset(Dataset):
     def __init__(self, tokens, max_length, stride=None, pad_token_id=0):
@@ -38,7 +39,7 @@ class SharedDataManager:
         self.val_loader = None
         self.config = None
         
-    def load_or_create_datasets(self, config, force_reload=False):
+    def load_or_create_datasets(self, config, force_reload=False, rank=None, world_size=None):
         """Load cached datasets or create new ones"""
         cache_file = self.cache_dir / f"datasets_{config.num_documents}_{config.max_seq_len}.pkl"
         
@@ -52,7 +53,7 @@ class SharedDataManager:
                     self.val_dataset = cached_data['val_dataset']
                     self.config = cached_data['config']
                 print("✅ Cached datasets loaded successfully!")
-                return self._create_dataloaders(config)
+                return self._create_dataloaders(config, rank, world_size)
             except Exception as e:
                 print(f"⚠️ Failed to load cache: {e}")
                 print("🔄 Creating new datasets...")
@@ -110,26 +111,66 @@ class SharedDataManager:
         # Cache the datasets
         self._cache_datasets(cache_file, config)
         
-        return self._create_dataloaders(config)
+        return self._create_dataloaders(config, rank, world_size)
     
-    def _create_dataloaders(self, config):
-        """Create DataLoaders from existing datasets"""
-        train_loader = DataLoader(
-            self.train_dataset, 
-            batch_size=config.batch_size,
-            shuffle=True, 
-            num_workers=0,  # ← Set to 0 to debug
-            pin_memory=True,
-            drop_last=True
-        )
+    def _create_dataloaders(self, config, rank=None, world_size=None):
+        """Create DataLoaders from existing datasets with proper distributed sampling"""
         
-        val_loader = DataLoader(
-            self.val_dataset, 
-            batch_size=config.batch_size,
-            shuffle=False, 
-            num_workers=0,  # ← Set to 0 to debug
-            pin_memory=True
-        )
+        # Check if we're in distributed mode
+        if rank is not None and world_size is not None:
+            # Create distributed samplers
+            train_sampler = DistributedSampler(
+                self.train_dataset, 
+                num_replicas=world_size, 
+                rank=rank,
+                shuffle=True
+            )
+            val_sampler = DistributedSampler(
+                self.val_dataset, 
+                num_replicas=world_size, 
+                rank=rank,
+                shuffle=False
+            )
+            
+            train_loader = DataLoader(
+                self.train_dataset, 
+                batch_size=config.batch_size,
+                sampler=train_sampler,  # Use distributed sampler
+                num_workers=4,
+                pin_memory=True,
+                drop_last=True
+            )
+            
+            val_loader = DataLoader(
+                self.val_dataset, 
+                batch_size=config.batch_size,
+                sampler=val_sampler,  # Use distributed sampler
+                num_workers=4,
+                pin_memory=True,
+                drop_last=True
+            )
+            
+            print(f"🚀 Rank {rank}: Created distributed dataloaders with {len(train_loader)} batches")
+            
+        else:
+            # Non-distributed mode (fallback)
+            train_loader = DataLoader(
+                self.train_dataset, 
+                batch_size=config.batch_size,
+                shuffle=True, 
+                num_workers=4,
+                pin_memory=True,
+                drop_last=True
+            )
+            
+            val_loader = DataLoader(
+                self.val_dataset, 
+                batch_size=config.batch_size,
+                shuffle=False, 
+                num_workers=4,
+                pin_memory=True,
+                drop_last=True
+            )
         
         return train_loader, val_loader
     

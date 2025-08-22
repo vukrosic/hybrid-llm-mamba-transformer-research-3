@@ -310,31 +310,21 @@ def main():
         print(f"📚 Documents: {config.num_documents} (3x increase)")
         print(f"🚀 Data Parallel: {world_size} GPUs, {config.batch_size} batch per GPU")
     
-    # Load data using shared data manager
+    # Load data using shared data manager with distributed info
     if rank == 0:
         print("Loading extended dataset...")
-    
-    train_loader, val_loader = shared_data_manager.load_or_create_datasets(config, force_reload=args.force_reload_data)
-    
-    # Wrap with DistributedSampler for data parallelism
-    if dist.is_initialized():
-        train_sampler = DistributedSampler(train_loader.dataset, shuffle=True)
-        val_sampler = DistributedSampler(val_loader.dataset, shuffle=False)
-        
-        train_loader = DataLoader(
-            train_loader.dataset,
-            batch_size=config.batch_size,
-            sampler=train_sampler,
-            num_workers=4,
-            pin_memory=True
-        )
-        val_loader = DataLoader(
-            val_loader.dataset,
-            batch_size=config.batch_size,
-            sampler=val_sampler,
-            num_workers=4,
-            pin_memory=True
-        )
+
+    train_loader, val_loader = shared_data_manager.load_or_create_datasets(
+        config, 
+        force_reload=args.force_reload_data,
+        rank=rank if dist.is_initialized() else None,
+        world_size=world_size if dist.is_initialized() else None
+    )
+
+    # Remove the manual DistributedSampler wrapping since it's now handled in shared_data.py
+    # train_sampler = DistributedSampler(train_loader.dataset, shuffle=True)
+    # val_sampler = DistributedSampler(val_loader.dataset, shuffle=False)
+    # ... etc
     
     # Get tokenizer from shared manager
     tokenizer = shared_data_manager.get_tokenizer()
