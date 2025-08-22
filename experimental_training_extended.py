@@ -29,7 +29,7 @@ class ExtendedExperimentConfig(HybridConfig):
     """Extended config for longer experiments with more data"""
     experiment_name: str = "extended_pattern_ablation"
     pattern_name: str = "MMAMAMAM"
-    eval_every: int = 500  # Less frequent evaluation for longer runs
+    eval_every: int = 1000  # Less frequent evaluation for longer runs (every 1k steps)
     save_every: int = 2000
     num_eval_batches: int = 100  # More eval batches for better estimates
     
@@ -227,7 +227,7 @@ def main():
     if args.debug:
         config.num_documents = 5000
         config.num_steps = 1000
-        config.eval_every = 100
+        config.eval_every = 200  # More frequent for debug mode
     
     if args.steps:
         config.num_steps = args.steps
@@ -318,7 +318,7 @@ def main():
     train_iter = iter(train_loader)
     best_val_loss = float('inf')
     patience_counter = 0
-    max_patience = 15  # Increased patience for longer runs
+    max_patience = 30  # Increased patience for longer runs (30k steps / 1k eval = 30 evaluations max)
     
     while step < config.num_steps:
         # Get batch
