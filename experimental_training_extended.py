@@ -37,6 +37,11 @@ class ExtendedExperimentConfig(HybridConfig):
     num_documents: int = 150000  # 3x increase from 50k for longer training
     num_steps: int = 30000  # 3x increase from 10k
     
+    # Larger model for extended experiments
+    hidden_size: int = 1024  # Increased from 768 (larger than base config)
+    num_heads: int = 16  # Increased from 12 (proportional to hidden_size)
+    ssm_state_size: int = 48  # Increased from 32 (larger SSM states)
+    
     # Optimized hyperparameters for longer training
     dropout: float = 0.1
     learning_rate: float = 3e-4  # Slightly reduced for longer training

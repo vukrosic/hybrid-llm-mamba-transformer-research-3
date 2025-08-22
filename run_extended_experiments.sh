@@ -28,16 +28,16 @@ if [ $AVAILABLE_GPUS -eq 0 ]; then
     exit 1
 fi
 
-# Define all 8 experiments
+# Define all 8 experiments with larger models
 declare -a EXPERIMENTS=(
-    "MAMAMAMAMAMA:mama_alternating_12L_extended:MAMA alternating pattern scaled to 12 layers"
-    "MAMAMAMAMAMAMAMAM:mama_alternating_15L_extended:MAMA alternating pattern scaled to 15 layers"
-    "MMAAMMAAMMAAMMAA:mmaammaa_pattern_12L_extended:MMAAMMAA pattern scaled to 12 layers"
-    "MMAAMMAAMMAAMMA:mmaammaa_pattern_14L_extended:MMAAMMAA pattern scaled to 14 layers"
-    "MAMAMAMAMAMAMAMA:mama_alternating_10L_extended:MAMA alternating pattern with 10 layers"
-    "MAMMMMMMMMMMMM:nemotron_14L:Nemotron architecture"
-    "MMAAAMMMAAA:mixed_grouped_11L:Mixed grouped pattern with varied block sizes"
-    "MAMAMAMAMAMAM:mama_alternating_13L_extended:MAMA alternating pattern with 13 layers"
+    "MAMAMAMAMAMA:mama_alternating_12L_extended:MAMA alternating pattern scaled to 12 layers (1024H)"
+    "MAMAMAMAMAMAMAMAM:mama_alternating_15L_extended:MAMA alternating pattern scaled to 15 layers (1024H)"
+    "MMAAMMAAMMAAMMAA:mmaammaa_pattern_12L_extended:MMAAMMAA pattern scaled to 12 layers (1024H)"
+    "MMAAMMAAMMAAMMA:mmaammaa_pattern_14L_extended:MMAAMMAA pattern scaled to 14 layers (1024H)"
+    "MAMAMAMAMAMAMAMA:mama_alternating_10L_extended:MAMA alternating pattern with 10 layers (1024H)"
+    "MAMMMMMMMMMMMM:nemotron_14L:Nemotron architecture (1024H)"
+    "MMAAAMMMAAA:mixed_grouped_11L:Mixed grouped pattern with varied block sizes (1024H)"
+    "MAMAMAMAMAMAM:mama_alternating_13L_extended:MAMA alternating pattern with 13 layers (1024H)"
 )
 
 NUM_EXPERIMENTS=${#EXPERIMENTS[@]}
@@ -192,6 +192,7 @@ echo "📊 Final Summary:"
 echo "================"
 echo "✅ 8 experiments completed in parallel"
 echo "🎯 Each experiment ran 30k steps on dedicated GPU" 
+echo "🔧 Models: 1024 hidden size, 16 attention heads, 48 SSM states"
 echo "📚 150k documents per experiment (3x original)"
 echo "💾 Results saved in experiments_extended/"
 echo "📝 Logs saved in logs_extended/"

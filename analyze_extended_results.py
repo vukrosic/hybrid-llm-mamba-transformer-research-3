@@ -218,6 +218,7 @@ def generate_extended_report(extended_df, original_df=None):
         f.write("### Training Configuration\n")
         f.write("- **Steps:** 30,000 (vs 10,000 original)\n")
         f.write("- **Documents:** 150,000 (vs 50,000 original)\n")
+        f.write("- **Model Size:** 1024 hidden size, 16 attention heads, 48 SSM states\n")
         f.write("- **Evaluation:** Every 1,000 steps (vs 200 original)\n")
         f.write("- **Patience:** 30 evaluations (vs 10 original)\n")
         f.write("- **Learning Rate:** 3e-4 (vs 4e-4 original)\n")

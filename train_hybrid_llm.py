@@ -17,10 +17,10 @@ from torch.amp import autocast, GradScaler
 @dataclass
 class HybridConfig:
     vocab_size: int = 50257
-    hidden_size: int = 384
+    hidden_size: int = 768  # Increased from 384 (2x larger)
     num_layers: int = 8
-    num_heads: int = 8
-    ssm_state_size: int = 16
+    num_heads: int = 12  # Increased from 8 (proportional to hidden_size)
+    ssm_state_size: int = 32  # Increased from 16 (2x larger)
     conv_kernel: int = 4
     expand_factor: int = 2
     layer_pattern: str = "MMAMAMAM"
