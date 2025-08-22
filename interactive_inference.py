@@ -161,7 +161,21 @@ class InteractiveInference:
         
         # Load weights
         if 'model_state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['model_state_dict'])
+            state_dict = checkpoint['model_state_dict']
+            
+            # Handle DDP wrapper - remove "module." prefix if present
+            if any(key.startswith('module.') for key in state_dict.keys()):
+                print("🔄 Removing DDP 'module.' prefix from state dict...")
+                new_state_dict = {}
+                for key, value in state_dict.items():
+                    if key.startswith('module.'):
+                        new_key = key[7:]  # Remove 'module.' prefix
+                        new_state_dict[new_key] = value
+                    else:
+                        new_state_dict[key] = value
+                state_dict = new_state_dict
+            
+            model.load_state_dict(state_dict)
             print("✅ Model weights loaded successfully")
         else:
             print("⚠️ No model weights found in checkpoint")
