@@ -1,17 +1,17 @@
 #!/bin/bash
-# run_data_parallel_experiment.sh - Single experiment with data parallelism on 2x RTX 4090
+# run_data_parallel_experiment.sh - Single experiment with data parallelism on 8x RTX 4090
 
-echo "🚀 Starting Data Parallel Training: AMAMAMAMAMAMAM 16L on 2x RTX 4090"
+echo "🚀 Starting Data Parallel Training: AMAMAMAMAMAMAMAM 16L on 8x RTX 4090"
 echo "================================================================"
 
-# Check if we have at least 2 GPUs
+# Check if we have at least 8 GPUs
 AVAILABLE_GPUS=$(nvidia-smi --list-gpus | wc -l)
-if [ $AVAILABLE_GPUS -lt 2 ]; then
-    echo "❌ Need at least 2 GPUs for data parallelism! Found: $AVAILABLE_GPUS"
+if [ $AVAILABLE_GPUS -lt 8 ]; then
+    echo "❌ Need at least 8 GPUs for data parallelism! Found: $AVAILABLE_GPUS"
     exit 1
 fi
 
-echo "✅ Found $AVAILABLE_GPUS GPUs - using first 2 for data parallelism"
+echo "✅ Found $AVAILABLE_GPUS GPUs - using first 8 for data parallelism"
 
 # Create experiment directory
 mkdir -p experiments_extended
@@ -27,12 +27,12 @@ DEBUG_FLAG=""
 echo " Experiment: $EXPERIMENT_NAME"
 echo "📊 Pattern: $PATTERN (16 layers)"
 echo "⏱️ Steps: $STEPS"
-echo "🚀 GPUs: 0,1 (Data Parallel)"
-echo "📦 Batch: 16 per GPU (32 effective)"
+echo "🚀 GPUs: 0-7 (Data Parallel)"
+echo "📦 Batch: 16 per GPU (256 effective)"
 echo "🔄 Gradient Accumulation: 2 steps"
 
 # Set environment variables for distributed training
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export NCCL_DEBUG=INFO
 export NCCL_IB_DISABLE=1
 
@@ -40,7 +40,7 @@ export NCCL_IB_DISABLE=1
 echo ""
 echo "🚀 Launching distributed training on 8 GPUs..."
 torchrun \
-    --nproc_per_node=8 \  # Changed from 2 to 8
+    --nproc_per_node=8 \
     --nnodes=1 \
     --node_rank=0 \
     experimental_training_extended.py \
@@ -48,10 +48,9 @@ torchrun \
     --name "$EXPERIMENT_NAME" \
     --steps $STEPS \
     $DEBUG_FLAG \
-    $USE_WANDB \
-    2>&1 | tee "logs_extended/${EXPERIMENT_NAME}_distributed_8gpu.log"
+    $USE_WANDB
 
 echo ""
 echo "✅ Training completed!"
 echo "📊 Results saved in: experiments_extended/$EXPERIMENT_NAME"
-echo "📝 Logs saved in: logs_extended/${EXPERIMENT_NAME}_distributed.log"
+echo "📝 Logs saved in: logs_extended/${EXPERIMENT_NAME}_distributed_8gpu.log"
