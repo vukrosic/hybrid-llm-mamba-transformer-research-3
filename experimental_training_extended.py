@@ -31,7 +31,7 @@ from shared_data import shared_data_manager
 class ExtendedExperimentConfig(HybridConfig):
     """Extended config for longer experiments with more data"""
     experiment_name: str = "extended_pattern_ablation"
-    pattern_name: str = "AMAMAMAMAMAMAM"  # Changed to AMAMAMAMAMAMAM
+    pattern_name: str = "AMAMAMAMAMAMAMAM"  # Fixed: 16 characters for 16 layers
     eval_every: int = 1000  # Less frequent evaluation for longer runs (every 1k steps)
     save_every: int = 2000
     num_eval_batches: int = 100  # More eval batches for better estimates

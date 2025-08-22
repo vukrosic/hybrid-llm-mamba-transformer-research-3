@@ -19,12 +19,12 @@ mkdir -p logs_extended
 
 # Configuration
 EXPERIMENT_NAME="amama_16L_data_parallel"
-PATTERN="AMAMAMAMAMAMAM"
+PATTERN="AMAMAMAMAMAMAMAM"  # Fixed: 16 characters for 16 layers
 STEPS=30000
 USE_WANDB="--use_wandb"
 DEBUG_FLAG=""
 
-echo "�� Experiment: $EXPERIMENT_NAME"
+echo " Experiment: $EXPERIMENT_NAME"
 echo "📊 Pattern: $PATTERN (16 layers)"
 echo "⏱️ Steps: $STEPS"
 echo "🚀 GPUs: 0,1 (Data Parallel)"
