@@ -118,6 +118,12 @@ class SharedDataManager:
         
         # Check if we're in distributed mode
         if rank is not None and world_size is not None:
+            # IMPORTANT: Reduce dataset size for each GPU to maintain same training time
+            if hasattr(config, 'num_documents') and config.num_documents > 0:
+                # Each GPU should process 1/world_size of the data
+                gpu_documents = config.num_documents // world_size
+                print(f"🚀 Rank {rank}: Processing {gpu_documents:,} documents (1/{world_size} of total)")
+            
             # Create distributed samplers
             train_sampler = DistributedSampler(
                 self.train_dataset, 

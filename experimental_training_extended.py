@@ -255,7 +255,17 @@ def main():
     if rank == 0:
         print(f"🚀 Starting Data Parallel Training on {world_size} GPUs")
         print(f"🔬 Pattern: {args.pattern} ({len(args.pattern)} layers)")
-        print(f"📊 Batch size: {16} per GPU, {16 * world_size * 2} effective")
+        print(f"⏱️ Steps: {args.steps} (30k extended)")
+        print(f"📚 Documents: {config.num_documents} (3x increase)")
+        print(f"🚀 Data Parallel: {world_size} GPUs, {config.batch_size} batch per GPU")
+        
+        # Adjust steps for data parallelism
+        original_steps = args.steps
+        adjusted_steps = args.steps // world_size  # Reduce steps proportionally
+        print(f"📊 Adjusted steps: {original_steps} → {adjusted_steps} (accounting for {world_size}x data parallelism)")
+        
+        # Update config for this run
+        config.num_steps = adjusted_steps
         
         # Create experiment directory
         exp_dir = f"experiments_extended/{args.name}"
