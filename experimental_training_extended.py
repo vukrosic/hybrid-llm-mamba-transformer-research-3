@@ -343,10 +343,19 @@ def main():
     # Create model with improved SSM if needed
     model = HybridModel(config).to(device)
     
-    # Replace SSM layers with improved version
+    # Replace SSM layers with improved version AND ensure they're on the correct device
     for i, layer in enumerate(model.layers):
         if config.layer_pattern[i] == 'M':
-            layer.mixer = ImprovedSSM(config)
+            layer.mixer = ImprovedSSM(config).to(device)  # Explicitly move to device
+    
+    # Double-check all parameters are on the correct device
+    model = model.to(device)
+    
+    # Verify all parameters are on the correct device before DDP
+    for name, param in model.named_parameters():
+        if param.device != device:
+            print(f"⚠️ Parameter {name} is on {param.device}, moving to {device}")
+            param.data = param.data.to(device)
     
     # Wrap with DDP for data parallelism
     if dist.is_initialized():
