@@ -15,6 +15,9 @@ import argparse
 from datetime import datetime
 import wandb
 from dotenv import load_dotenv
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 
 # Load environment variables from .env file
 load_dotenv()
@@ -28,7 +31,7 @@ from shared_data import shared_data_manager
 class ExtendedExperimentConfig(HybridConfig):
     """Extended config for longer experiments with more data"""
     experiment_name: str = "extended_pattern_ablation"
-    pattern_name: str = "MMAMAMAM"
+    pattern_name: str = "AMAMAMAMAMAMAM"  # Changed to AMAMAMAMAMAMAM
     eval_every: int = 1000  # Less frequent evaluation for longer runs (every 1k steps)
     save_every: int = 2000
     num_eval_batches: int = 100  # More eval batches for better estimates
@@ -41,6 +44,7 @@ class ExtendedExperimentConfig(HybridConfig):
     hidden_size: int = 1024  # Increased from 768 (larger than base config)
     num_heads: int = 16  # Increased from 12 (proportional to hidden_size)
     ssm_state_size: int = 48  # Increased from 32 (larger SSM states)
+    num_layers: int = 16  # Changed to 16 layers
     
     # Optimized hyperparameters for longer training
     dropout: float = 0.1
@@ -48,9 +52,9 @@ class ExtendedExperimentConfig(HybridConfig):
     weight_decay: float = 0.01
     warmup_steps: int = 3000  # 3x increase for longer schedule
     
-    # Maintain good batch size
-    batch_size: int = 32
-    gradient_accumulation_steps: int = 1
+    # Reduced batch size for data parallelism across 2 GPUs
+    batch_size: int = 16  # Reduced from 32 to 16 per GPU
+    gradient_accumulation_steps: int = 2  # Increased to maintain effective batch size
     
     # HF Hub
     hf_repo: str = "vukrosic/hybrid-llm-extended"
@@ -212,64 +216,124 @@ def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_st
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
+def setup_distributed():
+    """Setup distributed training"""
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        rank = int(os.environ['RANK'])
+        world_size = int(os.environ['WORLD_SIZE'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+        
+        dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
+        torch.cuda.set_device(local_rank)
+        
+        return rank, world_size, local_rank
+    else:
+        return 0, 1, 0
+
+def cleanup_distributed():
+    """Cleanup distributed training"""
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--pattern', type=str, default='MMAMAMAM', help='Layer pattern string')
-    parser.add_argument('--name', type=str, default=None, help='Experiment name')
-    parser.add_argument('--debug', action='store_true', help='Debug mode (fewer documents)')
-    parser.add_argument('--steps', type=int, default=None, help='Number of training steps')
-    parser.add_argument('--use_wandb', action='store_true', help='Log to W&B')
-    parser.add_argument('--force_reload_data', action='store_true', help='Force reload and retokenize data')
+    parser = argparse.ArgumentParser(description='Extended Hybrid LLM Training with Data Parallelism')
+    parser.add_argument('--pattern', type=str, default='AMAMAMAMAMAMAM', help='Layer pattern')
+    parser.add_argument('--name', type=str, default='amama_16L_extended', help='Experiment name')
+    parser.add_argument('--steps', type=int, default=30000, help='Number of training steps')
+    parser.add_argument('--debug', action='store_true', help='Debug mode')
+    parser.add_argument('--use_wandb', action='store_true', help='Use Weights & Biases')
+    parser.add_argument('--force_reload_data', action='store_true', help='Force reload data')
+    
     args = parser.parse_args()
     
-    # Setup config
-    config = ExtendedExperimentConfig(
-        layer_pattern=args.pattern,
-        pattern_name=args.pattern,
-        num_layers=len(args.pattern),
-    )
+    # Setup distributed training
+    rank, world_size, local_rank = setup_distributed()
     
-    if args.debug:
-        config.num_documents = 5000
-        config.num_steps = 1000
-        config.eval_every = 200  # More frequent for debug mode
+    # Only main process should create experiment directory and log
+    if rank == 0:
+        print(f"🚀 Starting Data Parallel Training on {world_size} GPUs")
+        print(f"🔬 Pattern: {args.pattern} ({len(args.pattern)} layers)")
+        print(f"📊 Batch size: {16} per GPU, {16 * world_size * 2} effective")
+        
+        # Create experiment directory
+        exp_dir = f"experiments_extended/{args.name}"
+        os.makedirs(exp_dir, exist_ok=True)
+        os.makedirs(f"{exp_dir}/checkpoints", exist_ok=True)
+        
+        # Save config
+        config = ExtendedExperimentConfig(
+            layer_pattern=args.pattern,
+            pattern_name=args.name,
+            num_steps=args.steps
+        )
+        
+        with open(f"{exp_dir}/config.json", 'w') as f:
+            json.dump(asdict(config), f, indent=2)
     
-    if args.steps:
-        config.num_steps = args.steps
+    # Synchronize all processes
+    if dist.is_initialized():
+        dist.barrier()
     
-    run_name = args.name or config.get_run_name()
+    # Load config on all processes
+    if rank != 0:
+        exp_dir = f"experiments_extended/{args.name}"
+        with open(f"{exp_dir}/config.json", 'r') as f:
+            config_dict = json.load(f)
+        config = ExtendedExperimentConfig(**config_dict)
+    else:
+        config = ExtendedExperimentConfig(
+            layer_pattern=args.pattern,
+            pattern_name=args.name,
+            num_steps=args.steps
+        )
     
-    # Create experiment directory
-    exp_dir = f"experiments_extended/{run_name}"
-    os.makedirs(exp_dir, exist_ok=True)
-    os.makedirs(f"{exp_dir}/checkpoints", exist_ok=True)
-    
-    # Save config
-    with open(f"{exp_dir}/config.json", 'w') as f:
-        json.dump(asdict(config), f, indent=2)
-    
-    # Initialize wandb if requested
-    if args.use_wandb:
+    # Initialize wandb only on main process
+    if args.use_wandb and rank == 0:
         wandb.init(
             project="hybrid-patterns-extended",
-            name=run_name,
+            name=config.get_run_name(),
             config=asdict(config),
-            tags=["extended", "30k-steps", f"{len(args.pattern)}L"]
+            tags=["extended", "30k-steps", "16L", "data-parallel", "2x4090"]
         )
     
     # Setup
     torch.backends.cudnn.benchmark = True
     torch.set_float32_matmul_precision('high')
-    device = torch.device('cuda')
+    device = torch.device(f'cuda:{local_rank}')
     
-    print(f"🔬 Extended Experiment: {run_name}")
-    print(f"📊 Pattern: {config.layer_pattern} ({config.num_layers} layers)")
-    print(f"⏱️ Steps: {config.num_steps} (30k extended)")
-    print(f"📚 Documents: {config.num_documents} (3x increase)")
+    if rank == 0:
+        print(f"🔬 Extended Experiment: {config.get_run_name()}")
+        print(f"📊 Pattern: {config.layer_pattern} ({config.num_layers} layers)")
+        print(f"⏱️ Steps: {config.num_steps} (30k extended)")
+        print(f"📚 Documents: {config.num_documents} (3x increase)")
+        print(f"🚀 Data Parallel: {world_size} GPUs, {config.batch_size} batch per GPU")
     
     # Load data using shared data manager
-    print("Loading extended dataset...")
+    if rank == 0:
+        print("Loading extended dataset...")
+    
     train_loader, val_loader = shared_data_manager.load_or_create_datasets(config, force_reload=args.force_reload_data)
+    
+    # Wrap with DistributedSampler for data parallelism
+    if dist.is_initialized():
+        train_sampler = DistributedSampler(train_loader.dataset, shuffle=True)
+        val_sampler = DistributedSampler(val_loader.dataset, shuffle=False)
+        
+        train_loader = DataLoader(
+            train_loader.dataset,
+            batch_size=config.batch_size,
+            sampler=train_sampler,
+            num_workers=4,
+            pin_memory=True
+        )
+        val_loader = DataLoader(
+            val_loader.dataset,
+            batch_size=config.batch_size,
+            sampler=val_sampler,
+            num_workers=4,
+            pin_memory=True
+        )
     
     # Get tokenizer from shared manager
     tokenizer = shared_data_manager.get_tokenizer()
@@ -284,12 +348,14 @@ def main():
         if config.layer_pattern[i] == 'M':
             layer.mixer = ImprovedSSM(config)
     
-    model = model.to(device)
+    # Wrap with DDP for data parallelism
+    if dist.is_initialized():
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
     
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
-    print(f"🔧 Model: {total_params/1e6:.1f}M parameters ({trainable_params/1e6:.1f}M trainable)")
+    if rank == 0:
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"🔧 Model: {total_params/1e6:.1f}M parameters ({trainable_params/1e6:.1f}M trainable)")
     
     # Improved optimizer setup
     optimizer = torch.optim.AdamW(
@@ -472,6 +538,8 @@ def main():
         })
         wandb.finish()
     
+    # Cleanup
+    cleanup_distributed()
     return results
 
 
