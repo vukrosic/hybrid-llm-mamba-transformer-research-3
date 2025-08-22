@@ -36,11 +36,11 @@ export CUDA_VISIBLE_DEVICES=0,1
 export NCCL_DEBUG=INFO
 export NCCL_IB_DISABLE=1
 
-# Launch with torchrun for distributed training
+# Launch with torchrun for distributed training on 8 GPUs
 echo ""
-echo "🚀 Launching distributed training..."
+echo "🚀 Launching distributed training on 8 GPUs..."
 torchrun \
-    --nproc_per_node=2 \
+    --nproc_per_node=8 \  # Changed from 2 to 8
     --nnodes=1 \
     --node_rank=0 \
     experimental_training_extended.py \
@@ -49,7 +49,7 @@ torchrun \
     --steps $STEPS \
     $DEBUG_FLAG \
     $USE_WANDB \
-    2>&1 | tee "logs_extended/${EXPERIMENT_NAME}_distributed.log"
+    2>&1 | tee "logs_extended/${EXPERIMENT_NAME}_distributed_8gpu.log"
 
 echo ""
 echo "✅ Training completed!"
