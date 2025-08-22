@@ -59,9 +59,9 @@ class SharedDataManager:
                 print("🔄 Creating new datasets...")
         
         print("🔄 Creating new datasets...")
-        return self._create_new_datasets(config, cache_file)
+        return self._create_new_datasets(config, cache_file, rank, world_size)
     
-    def _create_new_datasets(self, config, cache_file):
+    def _create_new_datasets(self, config, cache_file, rank=None, world_size=None):
         """Create new tokenized datasets"""
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM-135M")
